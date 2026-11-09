@@ -4,7 +4,6 @@ hermes-finance pattern, applied to matters instead of money."""
 import os, sqlite3, pathlib
 
 SCHEMA_VERSION = 1
-CREDENTIAL_COLUMNS = ("secret", "token", "api_key")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS matters (
@@ -71,6 +70,8 @@ def connect(path=None) -> sqlite3.Connection:
     try: os.chmod(p, 0o600)
     except OSError: pass
     return conn
+
+CREDENTIAL_COLUMNS = ("secret", "token", "api_key")
 
 def connect_readonly(path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"{pathlib.Path(path).resolve().as_uri()}?mode=ro", uri=True)
