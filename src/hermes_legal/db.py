@@ -28,7 +28,15 @@ CREATE TABLE IF NOT EXISTS deadlines (
   due_at TEXT NOT NULL,
   title TEXT NOT NULL,
   rule_source TEXT NOT NULL DEFAULT '',
-  verified INTEGER NOT NULL DEFAULT 0
+  verified INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'confirmed',
+  kind TEXT NOT NULL DEFAULT '',
+  confirmed_by TEXT NOT NULL DEFAULT '',
+  second_confirmer TEXT NOT NULL DEFAULT '',
+  confirmed_at TEXT NOT NULL DEFAULT '',
+  source_excerpt TEXT NOT NULL DEFAULT '',
+  rule_id TEXT NOT NULL DEFAULT '',
+  calculation_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS citations (
   id INTEGER PRIMARY KEY,
