@@ -1,0 +1,86 @@
+name: Desktop
+
+# Manually triggered only. Building the Tauri shell is slow and needs
+# platform toolchains that the normal CI does not install, and release
+# builds additionally need signing secrets. This workflow must never
+# gate a PR: it runs only when a maintainer dispatches it.
+on:
+  workflow_dispatch:
+    inputs:
+      signed_release:
+        description: "Build as a signed release (requires the signing secrets in desktop/packaging.md)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    env:
+      # Signing material is provided only through repository secrets.
+      # Nothing is committed to this repository: no certificate, no
+      # private key, no placeholder value. When a secret is absent the
+      # build is unsigned and its artifacts are for smoke testing only;
+      # they are never published as a release. See desktop/packaging.md.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux WebView dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Stage the Python sidecar placeholder for this target
+        shell: bash
+        run: |
+          # The real sidecar is the Python core packaged as one
+          # executable. Until that packaging lands, stage a placeholder
+          # file with the exact target-triple name Tauri expects next to
+          # bundle.externalBin, so the shell itself builds and can be
+          # smoke tested. A placeholder sidecar cannot serve the
+          # dashboard; artifacts from this step are never a release.
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          mkdir -p desktop/src-tauri/binaries
+          printf 'placeholder sidecar for %s\n' "$triple" > "desktop/src-tauri/binaries/hermes-legal-sidecar-${triple}${ext}"
+          ls -la desktop/src-tauri/binaries/
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build the Tauri shell and bundles
+        working-directory: desktop/src-tauri
+        run: cargo tauri build
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-legal-desktop-${{ matrix.os }}
+          path: |
+            target/release/bundle/**
+          if-no-files-found: warn
