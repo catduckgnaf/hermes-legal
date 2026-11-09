@@ -60,6 +60,15 @@ CREATE TABLE IF NOT EXISTS credentials (
   connector TEXT NOT NULL,
   secret TEXT
 );
+CREATE TABLE IF NOT EXISTS ceiling_raises (
+  id INTEGER PRIMARY KEY,
+  matter_id INTEGER NOT NULL REFERENCES matters(id),
+  previous_ceiling TEXT NOT NULL,
+  new_ceiling TEXT NOT NULL,
+  raised_by TEXT NOT NULL,
+  consent_note TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 """
 
 def data_dir() -> pathlib.Path:
