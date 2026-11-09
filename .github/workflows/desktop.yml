@@ -82,5 +82,5 @@ jobs:
         with:
           name: hermes-legal-desktop-${{ matrix.os }}
           path: |
-            target/release/bundle/**
-          if-no-files-found: warn
+            desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: error
