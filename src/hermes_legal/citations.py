@@ -20,6 +20,13 @@ Statuses
     the retrieved text.
 ``not_found``
     A resolver looked and found no matching authority.
+``name_mismatch``
+    A resolver found an authority at that reporter location, but it is a
+    different case from the one the document names. This is the most common
+    shape of an invented citation, so it blocks the gate.
+``quote_not_verified``
+    The authority was found, but a supplied quotation could not be confirmed
+    in retrieved text. It blocks the gate.
 ``history_unknown``
     The subsequent-history dimension of every result. Hermes Legal has no
     Shepard's or KeyCite, so history is always reported as unknown and the
@@ -41,7 +48,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -49,13 +56,16 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 # Statuses
 # ---------------------------------------------------------------------------
 
-STATUSES = ("unverified", "exists", "quote_verified", "not_found", "history_unknown")
+STATUSES = (
+    "unverified", "exists", "quote_verified", "not_found", "history_unknown",
+    "name_mismatch", "quote_not_verified",
+)
 
 #: Statuses that mean a resolver actually checked the citation and found it.
 CHECKED_STATUSES = ("exists", "quote_verified")
 
 #: Statuses that block the Verify-All gate.
-BLOCKING_STATUSES = ("unverified", "not_found")
+BLOCKING_STATUSES = ("unverified", "not_found", "name_mismatch", "quote_not_verified")
 
 #: Shown wherever a verification result is presented.
 HISTORY_DISCLAIMER = (
@@ -141,7 +151,7 @@ def normalize_reporter(raw: str) -> str:
     ``F.Supp.3d`` and ``S.Ct.``. Unknown reporters are returned with
     whitespace collapsed, unchanged in substance -- never guessed.
     """
-    collapsed = re.sub(r"\s+", " ", raw.strip())
+    collapsed = re.sub(r"\s+", " ", raw.strip()).replace("\u2019", "'")
     return _SQUASHED_TO_CANONICAL.get(_squash(collapsed), collapsed)
 
 
@@ -151,6 +161,8 @@ def _reporter_pattern(reporter: str) -> str:
     # Allow the no-space variant (F.3d written F.3d is already tight; the
     # spaced forms such as "F. Supp. 3d" also appear as "F.Supp.3d").
     pattern = pattern.replace(r"\s+", r"\s*")
+    # Word autocorrects F. App'x to a curly apostrophe.
+    pattern = pattern.replace("'", "['\u2019]")
     return pattern
 
 
@@ -181,6 +193,21 @@ _CASE_NAME_RE = re.compile(
 )
 
 
+# Citation-shaped text the parser cannot break into volume/reporter/page.
+# These are never dropped: an authority the app cannot read must block the
+# Verify-All gate, or an invented citation passes simply by being unusual.
+_UNRECOGNIZED_RES = (
+    # Westlaw and Lexis database citations.
+    re.compile(r"\b\d{4}\s+(?:WL|U\.\s*S\.\s*(?:Dist\.|App\.)\s*LEXIS|[A-Z][A-Za-z.]*\s+LEXIS)\s+\d+\b"),
+    # Public-domain citations, e.g. 2013 IL App (1st) 111279-U or 2019 OK 12.
+    re.compile(r"\b(?:19|20)\d{2}\s+[A-Z]{2,4}(?:\s+App)?(?:\s+\(\d+[a-z]{2}\))?\s+\d+(?:-[A-Z])?\b"),
+    # Volume, unknown reporter, page, then a year parenthetical.
+    re.compile(r"\b\d{1,4}\s+(?:[A-Z][A-Za-z.'\u2019]*\s+){1,5}\d{1,5}(?:\s*,\s*\d{1,5})?\s+\([^)]{0,30}(?:19|20)\d{2}\)"),
+    # A case name followed by anything that starts with a number.
+    re.compile(r"\b[A-Z][\w.'\u2019&-]*\s+v\.\s+[A-Z][^,\n]{0,80},\s+\d[^.;\n]{0,40}"),
+)
+
+
 # ---------------------------------------------------------------------------
 # Citation value type
 # ---------------------------------------------------------------------------
@@ -199,12 +226,14 @@ class Citation:
     case_name: str | None = None
     start: int = -1
     end: int = -1
-    kind: str = "case"  # "case" or "statute"
+    kind: str = "case"  # "case", "statute", or "unrecognized"
     section: str | None = None  # statute only: the U.S.C. section
 
     @property
     def normalized(self) -> str:
         """The canonical citation string, e.g. ``678 F. Supp. 3d 443``."""
+        if self.kind == "unrecognized":
+            return re.sub(r"\s+", " ", self.raw).strip()
         if self.kind == "statute":
             return f"{self.volume} U.S.C. § {self.section}"
         return f"{self.volume} {self.reporter} {self.page}"
@@ -223,21 +252,29 @@ def _parse_paren(paren: str | None) -> tuple[str | None, int | None]:
     return (court or None), year
 
 
+_LEADING_SIGNAL_RE = re.compile(r"^(?:(?:See|Cf\.|But|Accord|Compare|Contra|also|see|e\.g\.|E\.g\.),?\s+)+")
+
+
 def _case_name_before(text: str, start: int) -> str | None:
     window = text[max(0, start - 140):start]
     match = _CASE_NAME_RE.search(window)
     if not match:
         return None
-    return re.sub(r"\s+", " ", match.group("name")).strip()
+    name = re.sub(r"\s+", " ", match.group("name")).strip()
+    return _LEADING_SIGNAL_RE.sub("", name) or None
 
 
-def extract_citations(text: str) -> list[Citation]:
+def extract_citations(text: str, *, include_unrecognized: bool = False) -> list[Citation]:
     """Extract citations from *text*, in document order.
 
     Finds federal reporters, regional reporters, common state reporters,
     and ``U.S.C.`` statute citations. Every returned citation is unverified
     by definition; use a resolver to check it. A reporter not listed in
     :data:`REPORTERS` is not extracted rather than guessed at.
+
+    The Verify-All gate passes ``include_unrecognized=True`` to also receive
+    citation-shaped text the parser cannot read, as ``kind="unrecognized"``,
+    so that it blocks instead of treating that text as no citation at all.
     """
     found: list[Citation] = []
     for match in _CITE_RE.finditer(text):
@@ -270,6 +307,14 @@ def extract_citations(text: str) -> list[Citation]:
             kind="statute",
             section=match.group("section"),
         ))
+    spans = [(c.start, c.end) for c in found]
+    for pattern in (_UNRECOGNIZED_RES if include_unrecognized else ()):
+        for match in pattern.finditer(text):
+            if any(match.start() < end and start < match.end() for start, end in spans):
+                continue
+            spans.append((match.start(), match.end()))
+            found.append(Citation(raw=match.group(0), start=match.start(),
+                                  end=match.end(), kind="unrecognized"))
     found.sort(key=lambda c: c.start)
     return found
 
@@ -321,6 +366,8 @@ def format_citation(citation: Citation | str) -> str:
     cite = citation if isinstance(citation, Citation) else parse_citation(citation)
     if cite is None:
         return str(citation)
+    if cite.kind == "unrecognized":
+        return cite.raw
     if cite.kind == "statute":
         out = f"{cite.volume} U.S.C. § {cite.section}"
         if cite.year:
@@ -353,7 +400,9 @@ def format_all(text: str) -> str:
     cursor = 0
     for cite in citations:
         out.append(text[cursor:cite.start])
-        out.append(format_citation(cite))
+        # The case name sits before the matched span, so it stays where it
+        # is in the text; formatting it again here would duplicate it.
+        out.append(format_citation(replace(cite, case_name=None)))
         cursor = cite.end
     out.append(text[cursor:])
     return "".join(out)
@@ -615,11 +664,58 @@ def parse_courtlistener_lookup(payload: Any, citation: Citation | str,
 # Verify one, verify all, and the gate
 # ---------------------------------------------------------------------------
 
+_NAME_STOPWORDS = frozenset({
+    "a", "an", "and", "al", "co", "company", "corp", "corporation", "et", "for",
+    "in", "inc", "incorporated", "limited", "llc", "llp", "ltd", "lp", "of", "on",
+    "plc", "re", "the", "to", "v", "vs",
+})
+
+
+def _name_tokens(name: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", name.casefold())) - _NAME_STOPWORDS
+
+
+def case_names_match(cited: str, matched: str) -> bool:
+    """True when each party in *cited* shares a significant word with *matched*."""
+    matched_tokens = _name_tokens(matched)
+    sides = [_name_tokens(side) for side in re.split(r"\s+v\.?\s+", cited, maxsplit=1)]
+    sides = [side for side in sides if side]
+    return bool(sides) and all(side & matched_tokens for side in sides)
+
+
+def _resolve(citation: Citation | str, resolver: CitationResolver,
+             quote: str | None) -> VerificationResult:
+    """Run the resolver, then apply the checks every resolver must pass.
+
+    Finding something at a reporter location is not enough: it has to be the
+    case the document names, and a supplied quotation has to be confirmed.
+    An unrecognized citation is never sent to a resolver.
+    """
+    cite = _as_citation(citation)
+    if cite is not None and cite.kind == "unrecognized":
+        return VerificationResult(
+            citation=cite.normalized, status="unverified", source="none",
+            detail="This citation format cannot be checked automatically; "
+                   "verify it by hand or remove it.")
+    result = resolver.verify(citation, quote=quote)
+    if result.status not in CHECKED_STATUSES:
+        return result
+    if cite is not None and cite.case_name and result.matched_name \
+            and not case_names_match(cite.case_name, result.matched_name):
+        return replace(result, status="name_mismatch", detail=(
+            f"The document cites {cite.case_name!r}, but this reporter location "
+            f"is {result.matched_name!r}."))
+    if quote and result.status != "quote_verified":
+        return replace(result, status="quote_not_verified", detail=(
+            result.detail or "The quotation could not be confirmed in retrieved text."))
+    return result
+
+
 def verify_citation(citation: Citation | str, resolver: CitationResolver,
                     quote: str | None = None) -> VerificationResult:
     """Verify one citation through *resolver*. Without a resolver there is
     no verification -- callers must pass one explicitly."""
-    return resolver.verify(citation, quote=quote)
+    return _resolve(citation, resolver, quote)
 
 
 @dataclass(frozen=True)
@@ -663,7 +759,8 @@ def verify_all(text_or_citations: str | Iterable[Citation | str],
     string to a quotation to check for ``quote_verified``.
     """
     if isinstance(text_or_citations, str):
-        citations: list[Citation | str] = list(extract_citations(text_or_citations))
+        citations: list[Citation | str] = list(
+            extract_citations(text_or_citations, include_unrecognized=True))
     else:
         citations = list(text_or_citations)
     results: list[VerificationResult] = []
@@ -675,7 +772,7 @@ def verify_all(text_or_citations: str | Iterable[Citation | str],
                 citation=key, status="unverified", source="none",
                 detail="No resolver was supplied; the citation has not been checked."))
         else:
-            results.append(resolver.verify(cite, quote=quote))
+            results.append(_resolve(cite, resolver, quote))
     warnings: list[str] = []
     if results:
         warnings.append(HISTORY_DISCLAIMER)
@@ -749,7 +846,7 @@ __all__ = [
     "CitationResolver", "CourtListenerClient", "FORMATTER_LIMITS",
     "FixtureResolver", "GateResult", "HISTORY_DISCLAIMER", "OfflineResolver",
     "REPORTERS", "STATUSES", "VerificationResult", "VerifyAllResult",
-    "assert_verify_all", "extract", "extract_all", "extract_citations",
+    "assert_verify_all", "case_names_match", "extract", "extract_all", "extract_citations",
     "format_all", "format_bluebook", "format_citation", "normalize_reporter",
     "parse_citation", "parse_courtlistener_lookup", "verify_all",
     "verify_all_gate", "verify_citation",

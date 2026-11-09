@@ -191,7 +191,10 @@ def test_quote_not_in_text_stays_exists():
 
 
 def test_statuses_contract():
-    assert STATUSES == ("unverified", "exists", "quote_verified", "not_found", "history_unknown")
+    assert STATUSES == (
+        "unverified", "exists", "quote_verified", "not_found", "history_unknown",
+        "name_mismatch", "quote_not_verified",
+    )
     assert "Shepard" in HISTORY_DISCLAIMER
 
 
@@ -344,3 +347,62 @@ def test_history_unknown_warns_but_does_not_block():
     result = verify_all(_DOC, resolver=_fixture_resolver())
     assert result.allowed is True
     assert any("history is unknown" in w for w in result.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Regressions: the gate must fail closed on what it cannot confirm
+# ---------------------------------------------------------------------------
+
+MATA_RECORD = {"678 F. Supp. 3d 443": {
+    "status": "exists", "matched_name": "Mata v. Avianca, Inc.", "text": "real opinion text"}}
+
+
+def test_gate_blocks_database_and_public_domain_citations():
+    from hermes_legal.citations import OfflineResolver, verify_all_gate
+    text = ("Martinez v. Delta Airlines, 2019 WL 4639462 (Tex. App. Sept. 25, 2019). "
+            "Shaboon v. Egyptair, 2013 IL App (1st) 111279-U.")
+    gate = verify_all_gate(text, resolver=OfflineResolver({}))
+    assert not gate.allowed
+    assert any("WL" in cite for cite in gate.blocked_citations)
+    assert any("IL App" in cite for cite in gate.blocked_citations)
+
+
+def test_gate_blocks_unknown_reporter_with_year():
+    from hermes_legal.citations import OfflineResolver, verify_all_gate
+    gate = verify_all_gate("See 12 Fake Rptr. 345 (2020).", resolver=OfflineResolver({}))
+    assert not gate.allowed
+
+
+def test_curly_apostrophe_reporter_is_extracted_and_normalized():
+    from hermes_legal.citations import parse_citation
+    cite = parse_citation("123 F. App\u2019x 456 (5th Cir. 2005)")
+    assert cite.reporter == "F. App'x"
+    assert cite.kind == "case"
+
+
+def test_wrong_case_name_on_real_reporter_location_blocks():
+    from hermes_legal.citations import OfflineResolver, verify_all_gate
+    text = "Totally Invented v. Nobody, 678 F. Supp. 3d 443 (S.D.N.Y. 2023)."
+    gate = verify_all_gate(text, resolver=OfflineResolver(MATA_RECORD))
+    assert not gate.allowed
+    assert gate.results[0].status == "name_mismatch"
+
+
+def test_correct_case_name_passes_with_signal_and_suffixes():
+    from hermes_legal.citations import OfflineResolver, verify_all_gate
+    text = "See Mata v. Avianca, 678 F. Supp. 3d 443 (S.D.N.Y. 2023)."
+    gate = verify_all_gate(text, resolver=OfflineResolver(MATA_RECORD))
+    assert gate.allowed, gate.message
+
+
+def test_unconfirmed_quote_blocks_the_gate():
+    from hermes_legal.citations import OfflineResolver, verify_all_gate
+    gate = verify_all_gate("678 F. Supp. 3d 443", resolver=OfflineResolver(MATA_RECORD),
+                           quotes={"678 F. Supp. 3d 443": "words that never appear"})
+    assert not gate.allowed
+    assert gate.results[0].status == "quote_not_verified"
+
+
+def test_format_all_does_not_duplicate_the_case_name():
+    text = "Mata v. Avianca, Inc., 678 F. Supp. 3d 443 (S.D.N.Y. 2023)."
+    assert format_all(text) == text
