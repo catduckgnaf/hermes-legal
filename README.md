@@ -55,10 +55,25 @@ cd hermes-legal
 uv sync
 uv run legal doctor     # offline: checks editors, local models, integrations
 uv run legal demo       # builds a synthetic demo matter (fictional client, no real data)
-uv run legal serve      # http://127.0.0.1:8770/ — the local dashboard
+uv run legal serve      # scaffold only: prints a notice and serves nothing yet (see Status below)
 uv run legal matter list
 uv run legal cite-check "Mata v. Avianca, Inc., 678 F. Supp. 3d 443 (S.D.N.Y. 2023)"
 ```
+
+## Status: what works today
+
+| Surface | Status | Notes |
+|---|---|---|
+| `legal` CLI: `doctor`, `status`, `demo`, `matter`, `models`, `tools` | Working | Covered by the offline test suite. `legal doctor` exits non-zero when a required item is missing; optional integrations are reported but do not fail the run. |
+| Document tools: `doc-compare`, `doc-redline`, `bates-plan`, `redact-verify` | Working | Deterministic, no model involved. `bates-plan` plans labels only and stamps nothing. |
+| Citations: `cite-check` extraction and formatting | Working | Extraction and formatting run offline. The CLI runs no resolver, so it reports every citation as unverified. |
+| Citation verification against CourtListener | Working, live only | A real resolver client exists in `citations.py`; its checks are marked `live`, need a token and network, and are excluded from the offline suite. |
+| Agent tools (`legal_*` definitions in `tooldefs.py`) | Partial | 18 tools are defined; only `legal_doc_compare` and `legal_doc_redline` have a mapped implementation today. The rest are definitions awaiting implementations. |
+| Connectors (Clio, DocuSign, PACER) | Partial | A shared connector contract plus first connectors exist with offline tests; the P0/P1 list under Connections is the roadmap, not the shipped set. |
+| `legal serve` (local dashboard) | Scaffold | A stub: it prints a notice and binds nothing. There is no dashboard yet. |
+| MCP server | Scaffold | `mcp_server.py` is a stub (module docstring and the tool import only) and the `mcp` dependency is optional; no MCP server runs yet. |
+| Hermes plugin | Scaffold | `plugin.yaml` and the usage skill ship, but the adapter module is a docstring-only stub with no tool registration code yet. |
+| Desktop app (Tauri 2) | Scaffold | Shell configuration, a placeholder page and packaging files exist; installers are not built yet. |
 
 ## The privacy tiers (the whole point)
 
