@@ -87,8 +87,11 @@ def data_dir() -> pathlib.Path:
     except OSError: pass
     return d
 
+def default_path() -> pathlib.Path:
+    return data_dir() / "legal.db"
+
 def connect(path=None) -> sqlite3.Connection:
-    p = pathlib.Path(path) if path else data_dir() / "legal.db"
+    p = pathlib.Path(path) if path else default_path()
     conn = sqlite3.connect(p)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)

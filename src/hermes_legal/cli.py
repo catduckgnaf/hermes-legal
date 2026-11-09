@@ -26,6 +26,61 @@ def _print_matters(rows, as_json, recent=False):
         else:
             print(row)
 
+def _confirm_approval(action):
+    """Approval needs a person at a terminal. An agent with a shell has no TTY."""
+    if not sys.stdin.isatty():
+        print("error: approving needs an interactive terminal", file=sys.stderr)
+        return False
+    print(f"About to run: {action['summary']}")
+    return input(f"Type {action['id']} to approve: ").strip() == str(action["id"])
+
+def _run_tool(args):
+    from . import dispatch as runtime
+    try:
+        call_args = json.loads(args.args)
+    except ValueError as exc:
+        print(f"error: --args is not JSON: {exc}", file=sys.stderr); return 2
+    ctx = runtime.Context(conn=db.connect(), write_conn=None)
+    ctx.write_conn = ctx.conn
+    try:
+        outcome = runtime.dispatch(args.name, call_args, ctx)
+    finally:
+        ctx.close()
+    print(json.dumps(outcome, indent=2))
+    return 0 if outcome["ok"] else 1
+
+def _run_actions(args):
+    from . import dispatch as runtime
+    conn = db.connect()
+    try:
+        if args.actions_cmd == "list":
+            print(json.dumps(runtime.list_actions(conn, include_decided=args.all), indent=2)); return 0
+        if args.actions_cmd == "show":
+            print(json.dumps(runtime.get_action(conn, args.id), indent=2)); return 0
+        if args.actions_cmd == "reject":
+            print(json.dumps(runtime.reject(conn, args.id, args.by), indent=2)); return 0
+        if not _confirm_approval(runtime.get_action(conn, args.id)):
+            print("not approved; nothing changed", file=sys.stderr); return 2
+        outcome = runtime.approve(conn, args.id, args.by)
+        print(json.dumps(outcome, indent=2))
+        return 0 if outcome["status"] == "executed" else 1
+    except runtime.ToolError as exc:
+        print(f"error: {exc.message}", file=sys.stderr); return 2
+    finally:
+        conn.close()
+
+def _run_ask(args):
+    from . import local_model
+    conn = db.connect()
+    try:
+        outcome = local_model.ask_matter(conn, args.matter_id, args.question, model=args.model)
+    except (ValueError, RuntimeError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr); return 2
+    finally:
+        conn.close()
+    print(json.dumps(outcome, indent=2))
+    return 0
+
 def _default_cite_resolver():
     """The resolver `legal cite-check` runs by default: a CourtListener
     client when a token is configured in the environment, else None, in
@@ -68,6 +123,20 @@ def main(argv=None, *, cite_resolver=None):
     rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
     rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
+    tool = sub.add_parser("tool", help="call one legal_* tool, exactly as an agent would")
+    tool.add_argument("name"); tool.add_argument("--args", default="{}", help="JSON object of arguments")
+    actions = sub.add_parser("actions", help="review pending actions; the only way a proposed write runs")
+    asub = actions.add_subparsers(dest="actions_cmd", required=True)
+    alist = asub.add_parser("list"); alist.add_argument("--all", action="store_true")
+    asub.add_parser("show").add_argument("id", type=int)
+    for verb in ("approve", "reject"):
+        decide = asub.add_parser(verb); decide.add_argument("id", type=int); decide.add_argument("--by", required=True)
+    mcp = sub.add_parser("mcp", help="run the MCP server, or control whether it may propose writes")
+    mcpsub = mcp.add_subparsers(dest="mcp_cmd", required=True)
+    mcpsub.add_parser("serve")
+    mcpsub.add_parser("allow-writes").add_argument("state", choices=["on", "off"])
+    ask = sub.add_parser("ask", help="ask about a matter using only a model on this computer")
+    ask.add_argument("matter_id", type=int); ask.add_argument("question"); ask.add_argument("--model", default=None)
     p = sub.add_parser("models", help="privacy tiers, provider catalog, and local models")
     p.add_argument("--json", action="store_true")
     p.add_argument("--ceiling", choices=["LOCAL_ONLY", "ZERO_RETENTION", "STANDARD"], default=None,
@@ -165,7 +234,7 @@ def main(argv=None, *, cite_resolver=None):
             print(row)
         return 0
     if args.cmd == "serve":
-        print("Dashboard is a v1 build item; the CLI, plugin and MCP surfaces work today.")
+        print("Dashboard is a v1 build item; the CLI, plugin and MCP tools work today.")
         print(f"Would bind 127.0.0.1:{args.port} only (local access mode).")
         return 0
     if args.cmd == "doc-compare":
@@ -255,6 +324,19 @@ def main(argv=None, *, cite_resolver=None):
             "history_note": HISTORY_DISCLAIMER,
             "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},
         }, indent=2)); return 0
+    if args.cmd == "tool":
+        return _run_tool(args)
+    if args.cmd == "actions":
+        return _run_actions(args)
+    if args.cmd == "mcp":
+        from . import mcp_server
+        if args.mcp_cmd == "serve":
+            return mcp_server.serve()
+        mcp_server.set_writes_allowed(db.connect(), args.state == "on")
+        print(f"MCP write proposals are {args.state}. Every proposal still needs a person to approve it.")
+        return 0
+    if args.cmd == "ask":
+        return _run_ask(args)
     ap.print_help(); return 0
 
 if __name__ == "__main__":
