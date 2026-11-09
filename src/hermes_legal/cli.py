@@ -56,8 +56,8 @@ def main(argv=None):
     bp = sub.add_parser("bates-plan", help="plan Bates labels for a page count (plan only; renders nothing)")
     bp.add_argument("--pages", type=int, required=True); bp.add_argument("--prefix", default="")
     bp.add_argument("--start", type=int, default=1); bp.add_argument("--digits", type=int, default=6)
-    rv = sub.add_parser("redact-verify", help="verify phrases are absent from an extracted text file")
-    rv.add_argument("text_file"); rv.add_argument("phrases", nargs="+")
+    rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
+    rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
     p = sub.add_parser("models", help="privacy tiers, provider catalog, and local models")
     p.add_argument("--json", action="store_true")
@@ -187,9 +187,23 @@ def main(argv=None):
         return 0
     if args.cmd == "redact-verify":
         import pathlib
+        from . import pdf_tools
         from .pdf_tools import DocumentText, verify_redaction
-        doc = DocumentText.from_texts([pathlib.Path(args.text_file).read_text(encoding="utf-8")])
+        data = pathlib.Path(args.text_file).read_bytes()
+        if pdf_tools.is_pdf_bytes(data):
+            try:
+                doc = pdf_tools.extract_text_layer(data)
+            except RuntimeError as exc:
+                print(f"no PDF was checked: {exc}", file=sys.stderr)
+                return 2
+            result = verify_redaction(doc, list(args.phrases))
+            print("checked the text layer re-extracted from the PDF file itself")
+            print(json.dumps(result.as_dict(), indent=2))
+            return 0 if result.passed else 1
+        doc = DocumentText.from_texts([data.decode("utf-8")])
         result = verify_redaction(doc, list(args.phrases))
+        print("no PDF was checked: the input is not a PDF, so only this plain text was checked; "
+              "a text file passing proves nothing about any PDF")
         print(json.dumps(result.as_dict(), indent=2))
         return 0 if result.passed else 1
     if args.cmd == "cite-check":
