@@ -11,7 +11,7 @@ Thanks for helping improve Hermes Legal. This guide describes the repository wor
 
 ## Filing an issue
 
-- Use the [issue forms](.github/ISSUE_TEMPLATE). Bug reports require the observed behaviour, the steps that reproduce it, the Hermes Legal version and install method, and evidence. Feature requests require the problem, the proposed behaviour, scope, and acceptance criteria. Research issues require the question and the decision the answer informs. The forms mark which fields are required.
+- Use the [issue forms](.github/ISSUE_TEMPLATE). Bug reports require the observed behavior, the steps that reproduce it, the Hermes Legal version and install method, and evidence. Feature requests require the problem, the proposed behavior, scope, and acceptance criteria. Research issues require the question and the decision the answer informs. The forms mark which fields are required.
 - State measured facts, and label estimates and suspicions as such. Do not present a cause as verified when it is a hypothesis; say what evidence would settle it.
 - Never include credentials, tokens, private model files, or personal runtime records in an issue. Redact logs before posting.
 - Everything you write here is public, and the edit history keeps old versions. Do not include local file paths, machine or host names, private IP addresses, MAC addresses, email addresses, SSH targets, chat or account IDs, or anything else that says where you keep things. Say "the host", "the container" or "the matter" instead. There is no automated public-text checker in this repository yet, so check your own text before posting; the pull request template carries the same rule as a checkbox.
