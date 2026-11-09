@@ -301,10 +301,20 @@ class BaseConnector:
         return matter_id in self._enabled_matters
 
     def require_enabled(self, matter_id=None) -> None:
-        if matter_id is not None and not self.enabled_for_matter(matter_id):
-            raise ConnectorDisabled(f"{self.name} is not enabled for matter {matter_id}")
         if not self.enabled:
             raise ConnectorDisabled(f"{self.name} is disabled")
+        if self.enabled_for_matter(matter_id):
+            return
+        if matter_id is None:
+            # Fail closed: a restricted connector (enabled_matters is a
+            # set) must not silently skip its per-matter check just
+            # because the caller supplied no matter. Only an
+            # unrestricted connector (enabled_matters=None) allows a
+            # call with no matter context.
+            raise ConnectorDisabled(
+                f"{self.name} is restricted to specific matters; "
+                "a matter_id is required")
+        raise ConnectorDisabled(f"{self.name} is not enabled for matter {matter_id}")
 
     # -- credentials --------------------------------------------------------
     def credential(self, key: str) -> str | None:

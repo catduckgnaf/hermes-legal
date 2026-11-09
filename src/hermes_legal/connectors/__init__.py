@@ -37,6 +37,7 @@ from .pacer import (
     CourtListenerConnector,
     LookupResult,
     PacerConnector,
+    RecapCheckRequired,
 )
 
 ALL_CONNECTORS = (ClioConnector, DocuSignConnector, CourtListenerConnector, PacerConnector)
@@ -47,7 +48,8 @@ __all__ = [
     "CourtListenerConnector", "CredentialStore", "DataFlowLabel", "DOCUSIGN_DEMO_BASE",
     "DoctorResult", "DocuSignConnector", "EnvCredentialStore", "FakeTransport",
     "KeychainCredentialStore", "LookupResult", "MemoryCredentialStore", "OAuthConfig",
-    "OPEN_ALTERNATIVES", "PacerConnector", "PendingAction", "TokenSet", "Transport",
+    "OPEN_ALTERNATIVES", "PacerConnector", "PendingAction", "RecapCheckRequired",
+    "TokenSet", "Transport",
     "TransportResponse", "UrllibTransport", "clio_oauth", "default_credential_store",
     "docusign_oauth",
 ]
