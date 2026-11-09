@@ -85,14 +85,20 @@ def connect(path=None) -> sqlite3.Connection:
     except OSError: pass
     return conn
 
+CREDENTIAL_COLUMNS = ("secret", "token", "api_key")
+
 def connect_readonly(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"{pathlib.Path(path).resolve().as_uri()}?mode=ro", uri=True)
     conn.execute("PRAGMA query_only=1")
     def authorizer(action, p1, p2, db, src):
+        # SQLITE_IGNORE makes SQLite return NULL for the column, so even
+        # SELECT * on an agent connection cannot read a credential.
+        if action == sqlite3.SQLITE_READ and p1 == "credentials" and p2 in CREDENTIAL_COLUMNS:
+            return sqlite3.SQLITE_IGNORE
         return sqlite3.SQLITE_OK
     conn.set_authorizer(authorizer)
     return conn
 
 def redact_row(row: dict) -> dict:
     """Credential-shaped values never leave a read path."""
-    return {k: (None if k in ("secret", "token", "api_key") else v) for k, v in row.items()}
+    return {k: (None if k in CREDENTIAL_COLUMNS else v) for k, v in row.items()}

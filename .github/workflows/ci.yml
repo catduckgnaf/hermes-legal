@@ -25,10 +25,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: Install the locked dependencies
-        run: uv sync --frozen || uv sync
+      - name: Install dependencies
+        run: uv sync
       - name: Hermes plugin compiles on Python 3.11
-        run: uv run --no-project --python 3.11 python -m compileall -q hermes_plugin || python3 -m compileall -q hermes_plugin
+        run: uv run --no-project --python 3.11 python -m compileall -q hermes_plugin
       - name: Offline tests
         run: uv run python -m pytest -q
   check:
@@ -38,6 +38,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: uv sync || true
+      - run: uv sync
       - name: scripts/check.py ci
-        run: uv run python scripts/check.py ci || python3 -m pytest -q
+        run: uv run python scripts/check.py ci
+  offline-tests-windows:
+    # Windows is a v1 target. Not a required check until it has a track record.
+    name: offline-tests-windows
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.12
+      - name: Offline tests
+        run: uv run python -m pytest -q
