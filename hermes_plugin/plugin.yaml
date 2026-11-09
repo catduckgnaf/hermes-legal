@@ -15,17 +15,17 @@ provides_tools:
   - legal_cite_format
   - legal_playbook_review
   - legal_doc_redline
-  - legal_chronology
   - legal_deadline_extract
   - legal_deadline_calc
-  - legal_transcribe
-  - legal_intake_summary
   - legal_time_log
-  - legal_sync
-  - legal_efile_bundle
 provides_hooks:
   - pre_tool_call
+  - pre_llm_call
 config_schema:
+  HERMES_LEGAL_AGENT_TIER:
+    type: str
+    default: ""
+    description: "The privacy tier of the model Hermes uses: LOCAL_ONLY, ZERO_RETENTION or STANDARD. Empty means unknown, and no matter content is returned to the agent."
   HERMES_LEGAL_DATA_DIR:
     type: str
     default: ""
