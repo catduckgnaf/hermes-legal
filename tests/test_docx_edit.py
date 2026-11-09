@@ -140,3 +140,74 @@ def test_redline_preserves_other_parts():
     original = make_docx(["A.", "B."])
     redlined = build_redline(original, ["A.", "C."], when=WHEN)
     assert _part(redlined, "word/styles.xml") == _part(original, "word/styles.xml")
+
+
+# ---------------------------------------------------------------------------
+# Regressions: documents as Word actually writes them
+# ---------------------------------------------------------------------------
+
+_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD_AUTHORED = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+    f'<w:document xmlns:w="{_W}"'
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+    ' xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"'
+    ' xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml"'
+    ' xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"'
+    ' mc:Ignorable="w14 w15"><w:body>'
+    '<w:p w14:paraId="1A2B3C4D"><w:r><w:t>Keep this.</w:t></w:r></w:p>'
+    '<w:p><w:r><w:t>See </w:t></w:r><w:hyperlink r:id="rId9"><w:r><w:t>the exhibit</w:t></w:r>'
+    '</w:hyperlink><w:r><w:t> now.</w:t></w:r></w:p>'
+    '<w:p><w:ins w:id="7" w:author="Pat" w:date="2026-01-01T00:00:00Z"><w:r><w:t>Prior.</w:t></w:r></w:ins></w:p>'
+    '<w:sectPr/></w:body></w:document>'
+)
+
+
+def _word_docx():
+    import hermes_legal.docx_edit as d
+    return d.package_docx({
+        "word/document.xml": _WORD_AUTHORED.encode("utf-8"),
+        "word/styles.xml": d._styles_xml(),
+        "word/settings.xml": d._settings_xml(),
+    })
+
+
+def _document_xml(data):
+    import io
+    import zipfile
+    return zipfile.ZipFile(io.BytesIO(data)).read("word/document.xml").decode("utf-8")
+
+
+def test_redline_keeps_namespace_prefixes_word_requires():
+    import hermes_legal.docx_edit as d
+    xml = _document_xml(d.build_redline(_word_docx(), ["Keep this.", "New.", "Prior."]))
+    assert 'mc:Ignorable="w14 w15"' in xml
+    for prefix in ("mc", "w14", "w15"):
+        assert f"xmlns:{prefix}=" in xml
+    assert "w14:paraId=" in xml
+
+
+def test_redline_revision_ids_stay_unique_with_existing_revisions():
+    import re
+    import hermes_legal.docx_edit as d
+    xml = _document_xml(d.build_redline(_word_docx(), ["Keep this.", "New.", "Prior."]))
+    ids = re.findall(r'<w:(?:ins|del)\b[^>]*w:id="(\d+)"', xml)
+    assert len(ids) == len(set(ids)) and len(ids) >= 4
+
+
+def test_rejecting_a_redline_restores_hyperlink_text():
+    import hermes_legal.docx_edit as d
+    src = _word_docx()
+    out = d.build_redline(src, ["Keep this.", "New.", "Prior."])
+    assert d.reject_all_text(out) == d.reject_all_text(src)
+    assert "See the exhibit now." in d.reject_all_text(out)
+    assert "New." in d.accept_all_text(out)
+
+
+def test_inserted_paragraph_does_not_copy_a_section_break():
+    import hermes_legal.docx_edit as d
+    xml = (f'<w:document xmlns:w="{_W}"><w:body><w:p><w:pPr><w:sectPr/></w:pPr>'
+           '<w:r><w:t>One.</w:t></w:r></w:p><w:sectPr/></w:body></w:document>')
+    src = d.package_docx({"word/document.xml": xml.encode("utf-8"), "word/settings.xml": d._settings_xml()})
+    out = _document_xml(d.build_redline(src, ["One.", "Two."]))
+    assert out.count("sectPr") == xml.count("sectPr")

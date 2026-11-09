@@ -65,7 +65,12 @@ def main(argv=None):
         import pathlib
         from .docx_edit import build_redline
         out = build_redline(pathlib.Path(args.original).read_bytes(), pathlib.Path(args.revised).read_bytes())
-        pathlib.Path(args.output).write_bytes(out)
+        try:
+            with pathlib.Path(args.output).open("xb") as handle:
+                handle.write(out)
+        except FileExistsError:
+            print(f"error: {args.output} already exists; a redline never overwrites a file", file=sys.stderr)
+            return 2
         print(f"redline written to {args.output} (track changes by hermes-legal (AI - unverified); a human must accept them)")
         return 0
     if args.cmd == "bates-plan":
@@ -77,7 +82,7 @@ def main(argv=None):
     if args.cmd == "redact-verify":
         import pathlib
         from .pdf_tools import DocumentText, verify_redaction
-        doc = DocumentText.from_texts([pathlib.Path(args.text_file).read_text()])
+        doc = DocumentText.from_texts([pathlib.Path(args.text_file).read_text(encoding="utf-8")])
         result = verify_redaction(doc, list(args.phrases))
         print(json.dumps(result.as_dict(), indent=2))
         return 0 if result.passed else 1

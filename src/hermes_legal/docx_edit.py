@@ -25,6 +25,8 @@ from __future__ import annotations
 import copy
 import difflib
 import io
+import itertools
+import re
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,6 +47,37 @@ def _w(tag: str) -> str:
 
 def _xml_bytes(root: ET.Element) -> bytes:
     return b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + ET.tostring(root, encoding="utf-8")
+
+
+def _parse_part(raw: bytes) -> tuple[ET.Element, dict[str, str]]:
+    """Parse an XML part and return it with its namespace declarations.
+
+    ElementTree renames prefixes and drops declarations it thinks are unused.
+    Word documents reference prefixes from attribute values
+    (``mc:Ignorable="w14 w15"``), and Word refuses a file where those are not
+    declared, so the original declarations have to survive the round trip.
+    """
+    declared: dict[str, str] = {}
+    for _event, (prefix, uri) in ET.iterparse(io.BytesIO(raw), events=("start-ns",)):
+        if prefix:
+            declared.setdefault(prefix, uri)
+    for prefix, uri in declared.items():
+        if not re.fullmatch(r"ns\d+", prefix):
+            ET.register_namespace(prefix, uri)
+    return ET.fromstring(raw), declared
+
+
+def _part_bytes(root: ET.Element, declared: dict[str, str]) -> bytes:
+    """Serialize a part from :func:`_parse_part`, restoring its declarations."""
+    body = ET.tostring(root, encoding="utf-8").decode("utf-8")
+    end = re.search(r"/?>", body).start()
+    missing = "".join(
+        f' xmlns:{prefix}="{uri}"' for prefix, uri in declared.items()
+        if f"xmlns:{prefix}=" not in body[:end]
+    )
+    body = body[:end] + missing + body[end:]
+    return (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+            + body.encode("utf-8"))
 
 
 # --------------------------------------------------------------------------
@@ -106,6 +139,20 @@ def _styles_xml() -> bytes:
     name.set(_w("val"), "Normal")
     ET.SubElement(style, _w("qFormat"))
     return _xml_bytes(root)
+
+
+# Elements CT_Settings requires to come before w:trackRevisions, in order.
+_BEFORE_TRACK_REVISIONS = frozenset(_w(tag) for tag in (
+    "writeProtection", "view", "zoom", "removePersonalInformation", "removeDateAndTime",
+    "doNotDisplayPageBoundaries", "displayBackgroundShape", "printPostScriptOverText",
+    "printFractionalCharacterWidth", "printFormsData", "embedTrueTypeFonts",
+    "embedSystemFonts", "saveSubsetFonts", "saveFormsData", "mirrorMargins",
+    "alignBordersAndEdges", "bordersDoNotSurroundHeader", "bordersDoNotSurroundFooter",
+    "gutterAtTop", "hideSpellingErrors", "hideGrammaticalErrors", "activeWritingStyle",
+    "proofState", "formsDesign", "attachedTemplate", "linkStyles",
+    "stylePaneFormatFilter", "stylePaneSortMethod", "documentType", "mailMerge",
+    "revisionView",
+))
 
 
 def _settings_xml(track_revisions: bool = False) -> bytes:
@@ -217,7 +264,7 @@ def _paragraph_text(p: ET.Element, mode: str = "accepted") -> str:
             chunks.append(el.text or "")
             return
         if el.tag == _w("delText"):
-            if mode == "rejected":
+            if mode == "rejected" and not in_ins:
                 chunks.append(el.text or "")
             return
         if el.tag in (_w("tab"),):
@@ -401,70 +448,123 @@ def _mark_paragraph(p: ET.Element, tag: str, change_id: int, author: str, date: 
         p.insert(0, ppr)
     rpr = ppr.find(_w("rPr"))
     if rpr is None:
-        rpr = ET.SubElement(ppr, _w("rPr"))
-    mark = ET.SubElement(rpr, _w(tag))
+        rpr = ET.Element(_w("rPr"))
+        # CT_PPr ends with rPr, sectPr, pPrChange, in that order.
+        at = next((i for i, c in enumerate(ppr) if c.tag in (_w("sectPr"), _w("pPrChange"))), len(ppr))
+        ppr.insert(at, rpr)
+    # CT_ParaRPr requires w:ins and w:del before any formatting.
+    mark = ET.Element(_w(tag))
+    rpr.insert(0, mark)
     mark.set(_w("id"), str(change_id))
     mark.set(_w("author"), author)
     mark.set(_w("date"), date)
 
 
-def _deleted_paragraph(original: ET.Element, change_id: int, author: str, date: str, text: str) -> ET.Element:
-    """The caller allocates two ids per paragraph change: ``change_id`` for
-    the content element and ``change_id + 1`` for the paragraph mark, so
-    every ``w:id`` in the document stays unique."""
+# Containers that hold runs a tracked deletion must reach. Dropping these
+# would lose their text for good when the change is rejected.
+_RUN_CONTAINERS = frozenset(_w(tag) for tag in (
+    "hyperlink", "ins", "smartTag", "fldSimple", "sdt", "sdtContent", "customXml",
+))
+
+
+def _deleted_paragraph(original: ET.Element, next_id, author: str, date: str, text: str) -> ET.Element:
+    """A tracked deletion of ``original`` that keeps everything inside it.
+
+    Each run stays where it is and is wrapped in ``w:del``, including runs
+    inside hyperlinks, content controls, and another author's insertion.
+    Existing deletions are left alone. ``next_id`` allocates ``w:id`` values.
+    """
     p = copy.deepcopy(original)
-    _mark_paragraph(p, "del", change_id + 1, author, date)
-    runs = [c for c in list(p) if c.tag == _w("r")]
-    # Drop any element that is not paragraph properties or a plain run; the
-    # deleted copy is rebuilt from plain runs so Word sees simple w:del runs.
-    for child in list(p):
-        if child.tag not in (_w("pPr"), _w("r")):
-            p.remove(child)
-    delete = ET.Element(_w("del"))
-    delete.set(_w("id"), str(change_id))
-    delete.set(_w("author"), author)
-    delete.set(_w("date"), date)
-    if runs:
-        for run in runs:
-            p.remove(run)
-            new_run = copy.deepcopy(run)
-            for t in new_run.iter(_w("t")):
-                t.tag = _w("delText")
-            delete.append(new_run)
-    else:
-        run = ET.Element(_w("r"))
+    _mark_paragraph(p, "del", next_id(), author, date)
+
+    def new_delete() -> ET.Element:
+        delete = ET.Element(_w("del"))
+        delete.set(_w("id"), str(next_id()))
+        delete.set(_w("author"), author)
+        delete.set(_w("date"), date)
+        return delete
+
+    made = False
+
+    def wrap(parent: ET.Element) -> None:
+        nonlocal made
+        rebuilt: list[ET.Element] = []
+        current: ET.Element | None = None
+        for child in list(parent):
+            if child.tag == _w("r"):
+                if current is None:
+                    current = new_delete()
+                    rebuilt.append(current)
+                    made = True
+                for t in child.iter(_w("t")):
+                    t.tag = _w("delText")
+                for instr in child.iter(_w("instrText")):
+                    instr.tag = _w("delInstrText")
+                current.append(child)
+                continue
+            current = None
+            rebuilt.append(child)
+            if child.tag in _RUN_CONTAINERS:
+                wrap(child)
+        for child in list(parent):
+            parent.remove(child)
+        parent.extend(rebuilt)
+
+    wrap(p)
+    if not made and text:
+        delete = new_delete()
+        run = ET.SubElement(delete, _w("r"))
         t = ET.SubElement(run, _w("delText"))
         if text[:1].isspace() or text[-1:].isspace():
             t.set(f"{{{XML_NS}}}space", "preserve")
         t.text = text
-        delete.append(run)
-    p.append(delete)
+        p.append(delete)
     return p
 
 
-def _inserted_paragraph(text: str, change_id: int, author: str, date: str,
+def _inserted_paragraph(text: str, next_id, author: str, date: str,
                         ppr_source: ET.Element | None) -> ET.Element:
+    """A tracked insertion formatted like ``ppr_source``, its neighbor."""
     p = ET.Element(_w("p"))
+    run_props = None
     if ppr_source is not None:
         ppr = ppr_source.find(_w("pPr"))
         if ppr is not None:
-            p.append(copy.deepcopy(ppr))
-    _mark_paragraph(p, "ins", change_id + 1, author, date)
+            ppr = copy.deepcopy(ppr)
+            # A copied section break would add a section to the document, and
+            # a copied revision mark would attribute this change to someone else.
+            for tag in ("sectPr", "pPrChange"):
+                for el in ppr.findall(_w(tag)):
+                    ppr.remove(el)
+            mark_props = ppr.find(_w("rPr"))
+            if mark_props is not None:
+                for tag in ("ins", "del", "moveFrom", "moveTo"):
+                    for el in mark_props.findall(_w(tag)):
+                        mark_props.remove(el)
+            p.append(ppr)
+        first_run = next(ppr_source.iter(_w("r")), None)
+        if first_run is not None and first_run.find(_w("rPr")) is not None:
+            run_props = copy.deepcopy(first_run.find(_w("rPr")))
+    _mark_paragraph(p, "ins", next_id(), author, date)
     ins = ET.SubElement(p, _w("ins"))
-    ins.set(_w("id"), str(change_id))
+    ins.set(_w("id"), str(next_id()))
     ins.set(_w("author"), author)
     ins.set(_w("date"), date)
-    ins.append(run_element(text))
+    run = run_element(text)
+    if run_props is not None:
+        run.insert(0, run_props)
+    ins.append(run)
     return p
 
 
 def _ensure_track_revisions(parts: dict[str, bytes]) -> None:
     raw = parts.get("word/settings.xml")
     if raw is not None:
-        root = ET.fromstring(raw)
+        root, declared = _parse_part(raw)
         if root.find(_w("trackRevisions")) is None:
-            root.insert(0, ET.Element(_w("trackRevisions")))
-        parts["word/settings.xml"] = _xml_bytes(root)
+            at = sum(1 for child in root if child.tag in _BEFORE_TRACK_REVISIONS)
+            root.insert(at, ET.Element(_w("trackRevisions")))
+        parts["word/settings.xml"] = _part_bytes(root, declared)
     else:
         parts["word/settings.xml"] = _settings_xml(track_revisions=True)
 
@@ -490,10 +590,15 @@ def build_redline(original_data: bytes, revised: list[str] | bytes, *,
         parts = {info.filename: zf.read(info.filename) for info in infos}
     if "word/document.xml" not in parts:
         raise ValueError("not a DOCX file: word/document.xml is missing")
-    root = ET.fromstring(parts["word/document.xml"])
+    root, declared = _parse_part(parts["word/document.xml"])
     body = root.find(_w("body"))
     if body is None:
         raise ValueError("not a DOCX file: document has no w:body")
+
+    # w:id values must be unique across the document, including revisions
+    # and bookmarks that were there before this redline.
+    used_ids = [int(v) for el in root.iter() for v in [el.get(_w("id"))] if v and v.isdigit()]
+    next_id = itertools.count(max(used_ids, default=0) + 1).__next__
 
     children = list(body)
     old_paras = [c for c in children if c.tag == _w("p")]
@@ -523,7 +628,6 @@ def build_redline(original_data: bytes, revised: list[str] | bytes, *,
     for key in sorted(k for k in inserts_before if k > len(old_paras)):
         end_inserts.extend(inserts_before.pop(key))
 
-    change_id = 1
     new_children: list[ET.Element] = []
     ppr_source = old_paras[0] if old_paras else None
     old_index = -1
@@ -535,14 +639,13 @@ def build_redline(original_data: bytes, revised: list[str] | bytes, *,
         if child.tag == _w("p"):
             old_index += 1
             for text in inserts_before.get(old_index, []):
-                new_children.append(_inserted_paragraph(text, change_id, author, date, ppr_source))
-                change_id += 2
+                new_children.append(_inserted_paragraph(text, next_id, author, date, ppr_source))
+            ppr_source = child
             action = actions.get(old_index, "keep")
             if action == "keep":
                 new_children.append(child)
             else:
-                new_children.append(_deleted_paragraph(child, change_id, author, date, old_texts[old_index]))
-                change_id += 2
+                new_children.append(_deleted_paragraph(child, next_id, author, date, old_texts[old_index]))
             # A replace stores its new text in inserts_before[old_index + 1];
             # the next paragraph iteration emits it at its head, directly
             # after this deletion. A replace on the final paragraph was
@@ -550,8 +653,7 @@ def build_redline(original_data: bytes, revised: list[str] | bytes, *,
             continue
         new_children.append(child)
     for text in end_inserts:
-        new_children.append(_inserted_paragraph(text, change_id, author, date, ppr_source))
-        change_id += 2
+        new_children.append(_inserted_paragraph(text, next_id, author, date, ppr_source))
     if sect_pr is not None:
         new_children.append(sect_pr)
     for child in children:
@@ -559,7 +661,7 @@ def build_redline(original_data: bytes, revised: list[str] | bytes, *,
     for child in new_children:
         body.append(child)
 
-    parts["word/document.xml"] = _xml_bytes(root)
+    parts["word/document.xml"] = _part_bytes(root, declared)
     _ensure_track_revisions(parts)
     # Regenerate content types / document rels only when settings was added.
     out = io.BytesIO()
@@ -581,26 +683,21 @@ def _repackage_with_settings(parts: dict[str, bytes], infos) -> bytes:
     """Rebuild the zip adding a settings part, its content-type override,
     and its document relationship, preserving every other part byte for byte
     except ``word/document.xml`` (already patched by the caller)."""
-    ct_root = ET.fromstring(parts["[Content_Types].xml"])
-    ct_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
-    if not any(el.get("PartName") == "/word/settings.xml" for el in ct_root):
-        el = ET.SubElement(ct_root, f"{{{ct_ns}}}Override")
-        el.set("PartName", "/word/settings.xml")
-        el.set("ContentType", _CONTENT_TYPES["word/settings.xml"])
-    parts["[Content_Types].xml"] = _xml_bytes(ct_root)
+    # Edited as text: re-serializing these default-namespace parts through
+    # ElementTree would rewrite every element with an ns0 prefix.
+    content_types = parts["[Content_Types].xml"].decode("utf-8")
+    if "/word/settings.xml" not in content_types:
+        override = (f'<Override PartName="/word/settings.xml" '
+                    f'ContentType="{_CONTENT_TYPES["word/settings.xml"]}"/>')
+        parts["[Content_Types].xml"] = content_types.replace("</Types>", override + "</Types>").encode("utf-8")
     rel_name = "word/_rels/document.xml.rels"
-    rel_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
     if rel_name in parts:
-        rel_root = ET.fromstring(parts[rel_name])
-        ids = [el.get("Id") or "" for el in rel_root]
-        n = 1
-        while f"rId{n}" in ids:
-            n += 1
-        el = ET.SubElement(rel_root, f"{{{rel_ns}}}Relationship")
-        el.set("Id", f"rId{n}")
-        el.set("Type", _REL_TYPES["word/settings.xml"])
-        el.set("Target", "settings.xml")
-        parts[rel_name] = _xml_bytes(rel_root)
+        rels = parts[rel_name].decode("utf-8")
+        ids = set(re.findall(r'\bId="([^"]+)"', rels))
+        n = next(i for i in itertools.count(1) if f"rId{i}" not in ids)
+        relationship = (f'<Relationship Id="rId{n}" Type="{_REL_TYPES["word/settings.xml"]}" '
+                        f'Target="settings.xml"/>')
+        parts[rel_name] = rels.replace("</Relationships>", relationship + "</Relationships>").encode("utf-8")
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
         for info in infos:

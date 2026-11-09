@@ -40,3 +40,14 @@ def test_cli_redact_verify_exit_codes(tmp_path, capsys):
     assert main(["redact-verify", str(clean), "secret phrase"]) == 0
     capsys.readouterr()
     assert main(["redact-verify", str(dirty), "secret phrase"]) == 1
+
+
+def test_doc_redline_refuses_to_overwrite_an_existing_file(tmp_path):
+    from hermes_legal import cli
+    from hermes_legal.docx_edit import make_docx
+    old, new, out = tmp_path / "old.docx", tmp_path / "new.docx", tmp_path / "out.docx"
+    old.write_bytes(make_docx(["One."]))
+    new.write_bytes(make_docx(["Two."]))
+    out.write_bytes(b"precious")
+    assert cli.main(["doc-redline", str(old), str(new), "-o", str(out)]) == 2
+    assert out.read_bytes() == b"precious"
