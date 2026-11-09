@@ -66,7 +66,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
         lines, missing = doctor.run()
-        print("\n".join(lines)); return 1 if missing and False else 0
+        print("\n".join(lines)); return 1 if missing else 0
     if args.cmd == "tools":
         print(json.dumps([{"name": t.name, "write": t.write, "description": t.description} for t in tooldefs.TOOLS], indent=2)); return 0
     if args.cmd == "models":
