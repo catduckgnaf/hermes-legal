@@ -26,7 +26,16 @@ def _print_matters(rows, as_json, recent=False):
         else:
             print(row)
 
-def main(argv=None):
+def _default_cite_resolver():
+    """The resolver `legal cite-check` runs by default: a CourtListener
+    client when a token is configured in the environment, else None, in
+    which case cite-check stays fully offline and reports every citation
+    as unverified."""
+    from .citations import CourtListenerClient
+    client = CourtListenerClient()
+    return client if client.has_token else None
+
+def main(argv=None, *, cite_resolver=None):
     ap = argparse.ArgumentParser(prog="legal", description="Hermes Legal: local-first legal work")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
@@ -211,17 +220,37 @@ def main(argv=None):
         print(json.dumps(result.as_dict(), indent=2))
         return 0 if result.passed else 1
     if args.cmd == "cite-check":
-        from .citations import HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
-        found = extract_citations(args.text)
-        gate = verify_all_gate(args.text)
+        from .citations import BLOCKING_STATUSES, HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
+        resolver = cite_resolver if cite_resolver is not None else _default_cite_resolver()
+        found = extract_citations(args.text, include_unrecognized=True)
+        gate = verify_all_gate(args.text, resolver=resolver)
+        results = {r.citation: r for r in gate.results}
+        entries = []
+        for c in found:
+            result = results.get(c.normalized)
+            entries.append({
+                "raw": c.raw, "normalized": c.normalized, "formatted": format_citation(c),
+                "status": result.status if result else "unverified",
+                "source": result.source if result else "",
+                "detail": result.detail if result else "",
+            })
+        statuses = [e["status"] for e in entries]
+        if gate.allowed and statuses:
+            overall = statuses[0] if len(set(statuses)) == 1 else "exists"
+        elif statuses:
+            overall = next((s for s in statuses if s in BLOCKING_STATUSES), statuses[0])
+        else:
+            overall = "unverified"
+        if resolver is None:
+            note = "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model."
+        else:
+            note = (f"Citation statuses are from the {getattr(resolver, 'name', 'resolver')} resolver; "
+                    "a failed, not found, or ambiguous lookup is never reported as a match.")
         print(json.dumps({
-            "citations": [
-                {"raw": c.raw, "normalized": c.normalized, "formatted": format_citation(c),
-                 "status": "unverified"}
-                for c in found
-            ],
-            "status": "unverified",
-            "note": "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model.",
+            "citations": entries,
+            "status": overall,
+            "resolver": getattr(resolver, "name", None) if resolver is not None else None,
+            "note": note,
             "history": "history_unknown",
             "history_note": HISTORY_DISCLAIMER,
             "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},

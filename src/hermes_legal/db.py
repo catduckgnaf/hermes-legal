@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS citations (
   resolver TEXT NOT NULL DEFAULT '',
   checked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS citation_attestations (
+  id INTEGER PRIMARY KEY,
+  matter_id INTEGER,
+  citation TEXT NOT NULL,
+  citation_class TEXT NOT NULL DEFAULT '',
+  attested_by TEXT NOT NULL,
+  attested_at TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ai_log (
   id INTEGER PRIMARY KEY,
   matter_id INTEGER,
