@@ -10,6 +10,7 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = ["mcp>=2.2,<3"]
+pdf = ["pypdf>=5"]
 
 [project.scripts]
 legal = "hermes_legal.cli:main"
