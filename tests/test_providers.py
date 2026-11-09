@@ -349,3 +349,11 @@ def test_demo_matter_runs_locally_end_to_end(tmp_path):
     )
     assert preview.leaves_device is False
     assert list_ai_log(conn, mid)[0]["provider"] == provider.name
+
+
+def test_uncataloged_provider_claiming_local_only_is_refused():
+    import pytest
+    from hermes_legal.providers import PrivacyViolationError, Provider, route
+    invented = Provider("Totally Local Trust Me", "LOCAL_ONLY", False, "none", "2026-11-09")
+    with pytest.raises(PrivacyViolationError, match="not in the provider catalog"):
+        route("LOCAL_ONLY", invented)

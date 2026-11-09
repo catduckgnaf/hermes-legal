@@ -216,6 +216,20 @@ def find_provider(name) -> Provider:
     raise ValueError(f"unknown provider {name!r}; see `legal models` for the catalog")
 
 
+def _require_cataloged(provider: Provider) -> Provider:
+    """Refuse a provider that is not in the catalog.
+
+    A tier is only meaningful when this project recorded it. An object built
+    at runtime can claim LOCAL_ONLY for anything, so it is never routable.
+    """
+    if provider not in PROVIDERS:
+        raise PrivacyViolationError(
+            f"{provider.name} is not in the provider catalog, so its privacy "
+            "tier cannot be trusted; see `legal models`"
+        )
+    return provider
+
+
 def allowed_providers(matter_ceiling: str, *, zero_retention_allowlist: bool = False):
     """Every catalog provider the ceiling allows, catalog order preserved."""
     ceiling = validate_ceiling(matter_ceiling)
@@ -244,9 +258,10 @@ def route(matter_ceiling: str, requested=None, *, zero_retention_allowlist: bool
             raise PrivacyViolationError(f"no provider is allowed at ceiling {ceiling}")
         return candidates[0]
     provider = find_provider(requested)
-    return require_allowed(
+    require_allowed(
         provider, ceiling, zero_retention_allowlist=zero_retention_allowlist
     )
+    return _require_cataloged(provider)
 
 
 # Backwards-readable alias: routing *is* provider selection.
@@ -437,6 +452,7 @@ def log_ai_use(conn, matter_id, provider, action, *, model="", matter_ceiling=No
     require_allowed(
         resolved, ceiling, zero_retention_allowlist=zero_retention_allowlist
     )
+    _require_cataloged(resolved)
     if not str(action or "").strip():
         raise ValueError("action must not be empty")
     cur = conn.execute(
