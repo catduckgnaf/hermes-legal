@@ -3,7 +3,7 @@ connection for agent tools that redacts credential columns to NULL — the
 hermes-finance pattern, applied to matters instead of money."""
 import os, sqlite3, pathlib
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS matters (
@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS ai_log (
   matter_id INTEGER,
   provider TEXT NOT NULL,
   tier TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT '',
   action TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -73,6 +74,11 @@ def connect(path=None) -> sqlite3.Connection:
     conn = sqlite3.connect(p)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    # Migration for databases created before ai_log carried a model column:
+    # CREATE TABLE IF NOT EXISTS does not add columns to an existing table.
+    ai_log_columns = {row[1] for row in conn.execute("PRAGMA table_info(ai_log)")}
+    if "model" not in ai_log_columns:
+        conn.execute("ALTER TABLE ai_log ADD COLUMN model TEXT NOT NULL DEFAULT ''")
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
     try: os.chmod(p, 0o600)
