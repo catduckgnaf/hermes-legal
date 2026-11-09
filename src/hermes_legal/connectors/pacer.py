@@ -4,11 +4,15 @@ The rule is structural, not a warning label:
 
 1. :meth:`PacerConnector.lookup_document` always searches the free
    RECAP archive (via CourtListener) first.
-2. A document already in RECAP is returned at no cost and PACER is
-   never contacted.
-3. Otherwise the caller gets a cost estimate only. Fetching from
-   PACER requires ``approved_by`` naming a human, because PACER
-   charges per page.
+2. A RECAP search hit is a candidate, not the document: a search
+   result may match without being the document sought, so a hit is
+   reported in ``LookupResult.candidates`` and never as a confirmed
+   document.
+3. On a miss the caller gets a cost estimate only.
+4. :meth:`PacerConnector.fetch_from_pacer` refuses to run unless a
+   RECAP check through :meth:`lookup_document` on the same connector
+   first returned at least one candidate, and it also requires
+   ``approved_by`` naming a human, because PACER charges per page.
 
 PACER fee facts used for the estimate: $0.10 per page, capped at
 $3.00 per document, with the quarterly waiver threshold of $30. The
@@ -44,11 +48,17 @@ class CostEstimate:
                 f"fees at or under ${PACER_QUARTERLY_WAIVER_USD:.2f} per quarter are waived).")
 
 
+class RecapCheckRequired(RuntimeError):
+    """Raised when a PACER fetch is attempted without a prior RECAP
+    check, through ``lookup_document``, that returned a candidate."""
+
+
 @dataclass(frozen=True)
 class LookupResult:
     source: str  # "recap" or "pacer_estimate"
-    found: bool
-    documents: tuple = ()
+    found: bool  # True only for a confirmed document; a search hit never sets it
+    documents: tuple = ()  # Confirmed documents only; search hits go in candidates
+    candidates: tuple = ()  # RECAP search hits: possible matches, not confirmed documents
     estimate: CostEstimate | None = None
     note: str = ""
 
@@ -106,6 +116,7 @@ class PacerConnector(BaseConnector):
         super().__init__(transport, credentials, **kwargs)
         self.recap = recap
         self.pacer_base_url = pacer_base_url.rstrip("/")
+        self._recap_candidates: tuple | None = None  # None until a RECAP check runs
 
     def required_credentials(self):
         return ("username", "password")
@@ -116,12 +127,15 @@ class PacerConnector(BaseConnector):
         return CostEstimate(pages=pages)
 
     def lookup_document(self, query: str, *, estimated_pages: int = 10, matter_id=None) -> LookupResult:
-        """RECAP first. A hit costs nothing; a miss returns an estimate only."""
+        """RECAP first. A hit is a candidate only; a miss returns an estimate only."""
         self.require_enabled(matter_id)
         hits = self.recap.search_recap(query, matter_id=matter_id)
+        self._recap_candidates = tuple(hits)
         if hits:
-            return LookupResult(source="recap", found=True, documents=tuple(hits),
-                                note="Found in the free RECAP archive; PACER was not contacted and no fee applies.")
+            return LookupResult(source="recap", found=False, candidates=tuple(hits),
+                                note="RECAP search returned candidate(s) that may match; "
+                                     "a search hit is a candidate, not the confirmed document. "
+                                     "PACER was not contacted and no fee applies.")
         estimate = self.estimate_cost(estimated_pages)
         return LookupResult(source="pacer_estimate", found=False, estimate=estimate,
                             note="Not in RECAP. " + estimate.describe() +
@@ -129,8 +143,16 @@ class PacerConnector(BaseConnector):
 
     def fetch_from_pacer(self, document_id: str, *, estimated_pages: int = 10,
                          approved_by: str | None = None, matter_id=None):
-        """Paid pull. Refused without a named human approval."""
+        """Paid pull. Refused without a prior RECAP candidate and approval."""
         self.require_enabled(matter_id)
+        if not self._recap_candidates:
+            if self._recap_candidates is None:
+                detail = "no RECAP check has been run on this connector"
+            else:
+                detail = "the RECAP check found no candidate"
+            raise RecapCheckRequired(
+                f"PACER fetch refused: {detail}; run lookup_document first and "
+                "only fetch when RECAP returns a candidate")
         if not approved_by or not str(approved_by).strip():
             raise ApprovalRequired(
                 "PACER charges per page: pass approved_by naming the human who approved "

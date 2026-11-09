@@ -5,7 +5,8 @@ import pytest
 from hermes_legal.connectors import (
     ApprovalRequired, ClioConnector, ConnectorDisabled, CostEstimate,
     CourtListenerConnector, DocuSignConnector, EnvCredentialStore, FakeTransport,
-    MemoryCredentialStore, PacerConnector, TokenSet, clio_oauth, docusign_oauth,
+    MemoryCredentialStore, PacerConnector, RecapCheckRequired, TokenSet,
+    clio_oauth, docusign_oauth,
 )
 
 
@@ -72,6 +73,23 @@ def test_per_matter_enable_flag_blocks_other_matters():
         c.list_matters(matter_id=43)
 
 
+def test_restricted_connector_fails_closed_without_matter_id():
+    t = clio_fake()
+    c = ClioConnector(t, creds(CLIO_CREDS), enabled_matters={42})
+    assert c.enabled_for_matter(None) is False
+    with pytest.raises(ConnectorDisabled):
+        c.list_matters()
+    assert t.calls == [], "a fail-closed check must happen before any request"
+    with pytest.raises(ConnectorDisabled):
+        c.list_contacts(matter_id=None)
+
+
+def test_unrestricted_connector_still_allows_calls_without_matter_id():
+    c = ClioConnector(clio_fake(), creds(CLIO_CREDS))
+    assert c.enabled_for_matter(None) is True
+    assert c.list_matters()
+
+
 def test_oauth_config_shape_and_state_requirement():
     cfg = clio_oauth("synthetic-client-id")
     assert cfg.validate() == []
@@ -114,6 +132,41 @@ def test_clio_write_is_pending_until_approved():
     assert result["data"]["id"] == 99 and len(t.calls_to("POST")) == 1
     with pytest.raises(RuntimeError):
         action.approve("catduck")
+
+
+def clio_paged_fake():
+    t = FakeTransport()
+    next_url = "https://app.clio.com/api/v4/matters.json?page_token=page-2"
+
+    def matters(req):
+        if "page_token=page-2" in req["url"]:
+            return (200, {"data": [{"id": 3, "description": "Third matter"}],
+                          "meta": {"paging": {}}})
+        return (200, {"data": [{"id": 1, "description": "First matter"},
+                               {"id": 2, "description": "Second matter"}],
+                      "meta": {"paging": {"next": next_url}}})
+
+    t.add("GET", "https://app.clio.com/api/v4/matters.json", matters)
+    return t
+
+
+def test_clio_list_follows_meta_paging_next_until_exhausted():
+    t = clio_paged_fake()
+    c = ClioConnector(t, creds(CLIO_CREDS))
+    matters = c.list_matters()
+    assert [m["id"] for m in matters] == [1, 2, 3]
+    assert len(t.calls_to("GET", "matters.json")) == 2
+
+
+def test_clio_list_stops_on_a_paging_cycle_instead_of_looping():
+    t = FakeTransport()
+    url = "https://app.clio.com/api/v4/contacts.json"
+    t.add("GET", url,
+          lambda req: (200, {"data": [{"id": 2}],
+                             "meta": {"paging": {"next": url}}}))
+    c = ClioConnector(t, creds(CLIO_CREDS))
+    with pytest.raises(RuntimeError):
+        c.list_contacts()
 
 
 # --- DocuSign -------------------------------------------------------------
@@ -173,16 +226,40 @@ def pacer_pair(hits):
 def test_recap_hit_never_contacts_pacer():
     t, pacer = pacer_pair([{"id": 5, "caseName": "Synthetic v. Example"}])
     result = pacer.lookup_document("Synthetic v. Example")
-    assert result.source == "recap" and result.found and result.estimate is None
+    assert result.source == "recap" and result.estimate is None
     assert t.calls_to("GET", "pacer.uscourts.gov") == []
 
 
-def test_recap_miss_returns_estimate_only_and_paid_pull_needs_approval():
+def test_recap_hit_is_a_candidate_not_the_document():
+    t, pacer = pacer_pair([{"id": 5, "caseName": "Synthetic v. Example"}])
+    result = pacer.lookup_document("Synthetic v. Example")
+    assert result.candidates == ({"id": 5, "caseName": "Synthetic v. Example"},)
+    assert result.documents == () and not result.found
+    assert "candidate" in result.note
+
+
+def test_fetch_from_pacer_refused_without_any_recap_check():
+    t, pacer = pacer_pair([{"id": 5, "caseName": "Synthetic v. Example"}])
+    with pytest.raises(RecapCheckRequired):
+        pacer.fetch_from_pacer("doc-1", estimated_pages=12, approved_by="catduck")
+    assert t.calls_to("GET", "pacer.uscourts.gov") == []
+
+
+def test_recap_miss_returns_estimate_only_and_fetch_stays_refused():
     t, pacer = pacer_pair([])
     result = pacer.lookup_document("Missing v. Case", estimated_pages=50)
     assert result.source == "pacer_estimate" and not result.found
+    assert result.candidates == () and result.documents == ()
     assert result.estimate.total_usd == 3.00  # 50 pages hit the per-document cap
     assert t.calls_to("GET", "pacer.uscourts.gov") == []
+    with pytest.raises(RecapCheckRequired):
+        pacer.fetch_from_pacer("doc-1", estimated_pages=12, approved_by="catduck")
+    assert t.calls_to("GET", "pacer.uscourts.gov") == []
+
+
+def test_fetch_from_pacer_after_recap_candidate_still_needs_approval():
+    t, pacer = pacer_pair([{"id": 5, "caseName": "Synthetic v. Example"}])
+    pacer.lookup_document("Synthetic v. Example")
     with pytest.raises(ApprovalRequired):
         pacer.fetch_from_pacer("doc-1", estimated_pages=12)
     assert t.calls_to("GET", "pacer.uscourts.gov") == []
