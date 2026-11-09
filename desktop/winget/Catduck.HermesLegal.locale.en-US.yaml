@@ -1,0 +1,18 @@
+PackageIdentifier: Catduck.HermesLegal
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: catduckgnaf
+PublisherUrl: https://github.com/catduckgnaf
+PackageName: hermes-legal
+PackageUrl: https://github.com/catduckgnaf/hermes-legal
+License: AGPL-3.0-or-later
+LicenseUrl: https://github.com/catduckgnaf/hermes-legal/blob/main/LICENSE
+ShortDescription: Local-first legal work desktop with matter workspaces, document editing, and AI that shares nothing by default.
+Description: hermes-legal is a local-first desktop for legal work. Matters, documents and the database live in a local SQLite file and ordinary folders on your own computer. The default AI tier runs a local model and nothing leaves the device; cloud tiers are opt-in per matter. Writes that leave the application ask first.
+Tags:
+  - legal
+  - documents
+  - local-first
+  - privacy
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

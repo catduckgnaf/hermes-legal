@@ -37,3 +37,51 @@ both operating systems (numbering, footnotes, tables, tracked changes, comments)
 - File associations for `.docx` and `.pdf`, "Open Folder as Matter", drag and
   drop, recent matters, a `hermes-legal://` deep link, and a folder watcher that
   writes conflict copies rather than ever overwriting silently.
+
+### What is scaffolded now
+
+The Tauri 2 scaffold lives in `desktop/src-tauri/` and is configuration
+and source, not a compiled deliverable in pull request CI:
+
+- `tauri.conf.json` declares the bundle targets (`nsis`, `msi`,
+  `appimage`, `deb`), the Python sidecar under `bundle.externalBin`, the
+  `.docx` and `.pdf` file associations above, and the signed updater
+  endpoint. The identifier and package names stay `hermes-legal` /
+  `hermes_legal`; this is packaging, not a rename.
+- `src/lib.rs` starts the sidecar as `legal serve --port 8770` (loopback
+  only) and keeps the shell usable, with an explanation on screen, when
+  the sidecar cannot start — the plugin and dashboard never depend on
+  the shell.
+- `capabilities/default.json` lets the shell execute exactly the bundled
+  sidecar and nothing else.
+- `desktop/flatpak/` holds the Flatpak manifest; every permission,
+  including `--share=network`, is justified in its README for Flathub
+  review.
+- `desktop/winget/` holds the winget manifest set for the signed NSIS
+  and MSI installers. Installer hashes are added at publish time from
+  the real signed artifacts.
+- `.github/workflows/desktop.yml` builds the shell on `windows-latest`
+  and `ubuntu-latest`. It is dispatched by hand only, so it never gates
+  a pull request.
+
+### Signing and updates
+
+Code signing is a hard release requirement, and no signing material is
+committed to this repository — no certificate, no private key, and no
+placeholder value standing in for one. Release builds read the
+certificate or Azure Trusted Signing configuration, and the Tauri
+updater signing key, from repository secrets; the full list is in
+`desktop/packaging.md`. A build without those secrets is unsigned, is
+for smoke testing only, and is never published. Updates are signed on
+both platforms and verified by the shell against the updater public key
+before they are applied.
+
+### Acceptance status
+
+Issue #7 accepts this work when installers build in CI for both
+platforms and a clean install on each platform passes `legal doctor`
+and opens the demo matter. The scaffold and the manually triggered
+workflow are the first step; the remaining steps — a real per-target
+sidecar executable, signing secrets configured, signed update
+verification, and the clean-install checks — are tracked in the
+checklist in `desktop/packaging.md` and are not claimed here.

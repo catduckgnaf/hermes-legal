@@ -1,0 +1,9 @@
+# Created with the winget package model; scaffold for the first signed
+# release. The installer hash is filled in at publish time from the real
+# signed artifact (see the installer manifest) and is never committed
+# ahead of a build.
+PackageIdentifier: Catduck.HermesLegal
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

@@ -1,0 +1,34 @@
+{
+  "app-id": "com.catduckgnaf.hermeslegal",
+  "runtime": "org.freedesktop.Platform",
+  "runtime-version": "24.08",
+  "sdk": "org.freedesktop.Sdk",
+  "command": "hermes-legal",
+  "separate-locales": false,
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--share=network",
+    "--filesystem=home",
+    "--device=dri"
+  ],
+  "modules": [
+    {
+      "name": "hermes-legal",
+      "buildsystem": "simple",
+      "build-commands": [
+        "install -Dm755 hermes-legal /app/bin/hermes-legal",
+        "install -Dm755 hermes-legal-sidecar /app/bin/hermes-legal-sidecar",
+        "install -Dm644 com.catduckgnaf.hermeslegal.desktop /app/share/applications/com.catduckgnaf.hermeslegal.desktop",
+        "install -Dm644 icon.png /app/share/icons/hicolor/512x512/apps/com.catduckgnaf.hermeslegal.png"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "../.."
+        }
+      ]
+    }
+  ]
+}
