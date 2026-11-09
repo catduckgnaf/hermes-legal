@@ -81,7 +81,16 @@ def _run_ask(args):
     print(json.dumps(outcome, indent=2))
     return 0
 
-def main(argv=None):
+def _default_cite_resolver():
+    """The resolver `legal cite-check` runs by default: a CourtListener
+    client when a token is configured in the environment, else None, in
+    which case cite-check stays fully offline and reports every citation
+    as unverified."""
+    from .citations import CourtListenerClient
+    client = CourtListenerClient()
+    return client if client.has_token else None
+
+def main(argv=None, *, cite_resolver=None):
     ap = argparse.ArgumentParser(prog="legal", description="Hermes Legal: local-first legal work")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
@@ -111,8 +120,8 @@ def main(argv=None):
     bp = sub.add_parser("bates-plan", help="plan Bates labels for a page count (plan only; renders nothing)")
     bp.add_argument("--pages", type=int, required=True); bp.add_argument("--prefix", default="")
     bp.add_argument("--start", type=int, default=1); bp.add_argument("--digits", type=int, default=6)
-    rv = sub.add_parser("redact-verify", help="verify phrases are absent from an extracted text file")
-    rv.add_argument("text_file"); rv.add_argument("phrases", nargs="+")
+    rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
+    rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
     tool = sub.add_parser("tool", help="call one legal_* tool, exactly as an agent would")
     tool.add_argument("name"); tool.add_argument("--args", default="{}", help="JSON object of arguments")
@@ -135,7 +144,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
         lines, missing = doctor.run()
-        print("\n".join(lines)); return 1 if missing and False else 0
+        print("\n".join(lines)); return 1 if missing else 0
     if args.cmd == "tools":
         print(json.dumps([{"name": t.name, "write": t.write, "description": t.description} for t in tooldefs.TOOLS], indent=2)); return 0
     if args.cmd == "models":
@@ -150,6 +159,7 @@ def main(argv=None):
                     {"name": p.name, "tier": p.tier, "trains_on_data": p.trains_on_data,
                      "retention": p.retention, "terms_checked": p.terms_checked,
                      "notes": p.notes,
+                     "endpoint": providers.provider_endpoint(p),
                      "allowed_at_ceiling": (providers.allowed(p, args.ceiling) if args.ceiling else None)}
                     for p in catalog
                 ],
@@ -171,6 +181,9 @@ def main(argv=None):
                 print(f"  {providers.tier_badge(p)}")
                 print(f"      retention: {p.retention} | terms checked: {p.terms_checked}"
                       f" | trains on data: {'yes' if p.trains_on_data else 'no'}")
+                endpoint = providers.provider_endpoint(p)
+                if endpoint:
+                    print(f"      endpoint: {endpoint}")
                 if p.notes:
                     print(f"      {p.notes}")
         print("\nLocal models:")
@@ -256,23 +269,57 @@ def main(argv=None):
         return 0
     if args.cmd == "redact-verify":
         import pathlib
+        from . import pdf_tools
         from .pdf_tools import DocumentText, verify_redaction
-        doc = DocumentText.from_texts([pathlib.Path(args.text_file).read_text(encoding="utf-8")])
+        data = pathlib.Path(args.text_file).read_bytes()
+        if pdf_tools.is_pdf_bytes(data):
+            try:
+                doc = pdf_tools.extract_text_layer(data)
+            except RuntimeError as exc:
+                print(f"no PDF was checked: {exc}", file=sys.stderr)
+                return 2
+            result = verify_redaction(doc, list(args.phrases))
+            print("checked the text layer re-extracted from the PDF file itself")
+            print(json.dumps(result.as_dict(), indent=2))
+            return 0 if result.passed else 1
+        doc = DocumentText.from_texts([data.decode("utf-8")])
         result = verify_redaction(doc, list(args.phrases))
+        print("no PDF was checked: the input is not a PDF, so only this plain text was checked; "
+              "a text file passing proves nothing about any PDF")
         print(json.dumps(result.as_dict(), indent=2))
         return 0 if result.passed else 1
     if args.cmd == "cite-check":
-        from .citations import HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
-        found = extract_citations(args.text)
-        gate = verify_all_gate(args.text)
+        from .citations import BLOCKING_STATUSES, HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
+        resolver = cite_resolver if cite_resolver is not None else _default_cite_resolver()
+        found = extract_citations(args.text, include_unrecognized=True)
+        gate = verify_all_gate(args.text, resolver=resolver)
+        results = {r.citation: r for r in gate.results}
+        entries = []
+        for c in found:
+            result = results.get(c.normalized)
+            entries.append({
+                "raw": c.raw, "normalized": c.normalized, "formatted": format_citation(c),
+                "status": result.status if result else "unverified",
+                "source": result.source if result else "",
+                "detail": result.detail if result else "",
+            })
+        statuses = [e["status"] for e in entries]
+        if gate.allowed and statuses:
+            overall = statuses[0] if len(set(statuses)) == 1 else "exists"
+        elif statuses:
+            overall = next((s for s in statuses if s in BLOCKING_STATUSES), statuses[0])
+        else:
+            overall = "unverified"
+        if resolver is None:
+            note = "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model."
+        else:
+            note = (f"Citation statuses are from the {getattr(resolver, 'name', 'resolver')} resolver; "
+                    "a failed, not found, or ambiguous lookup is never reported as a match.")
         print(json.dumps({
-            "citations": [
-                {"raw": c.raw, "normalized": c.normalized, "formatted": format_citation(c),
-                 "status": "unverified"}
-                for c in found
-            ],
-            "status": "unverified",
-            "note": "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model.",
+            "citations": entries,
+            "status": overall,
+            "resolver": getattr(resolver, "name", None) if resolver is not None else None,
+            "note": note,
             "history": "history_unknown",
             "history_note": HISTORY_DISCLAIMER,
             "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},

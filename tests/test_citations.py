@@ -193,7 +193,7 @@ def test_quote_not_in_text_stays_exists():
 def test_statuses_contract():
     assert STATUSES == (
         "unverified", "exists", "quote_verified", "not_found", "history_unknown",
-        "name_mismatch", "quote_not_verified",
+        "name_mismatch", "quote_not_verified", "ambiguous", "attested",
     )
     assert "Shepard" in HISTORY_DISCLAIMER
 
@@ -406,3 +406,145 @@ def test_unconfirmed_quote_blocks_the_gate():
 def test_format_all_does_not_duplicate_the_case_name():
     text = "Mata v. Avianca, Inc., 678 F. Supp. 3d 443 (S.D.N.Y. 2023)."
     assert format_all(text) == text
+
+
+# --- Ambiguous resolver responses -----------------------------------------
+# A response with several clusters is not a match on the first one: a human
+# has to pick, so the status is "ambiguous" and the gate fails closed.
+
+def test_parse_courtlistener_several_clusters_is_ambiguous():
+    result = parse_courtlistener_lookup(
+        _load("courtlistener_lookup_ambiguous.json"), "678 F. Supp. 3d 443")
+    assert result.status == "ambiguous"
+    assert result.checked is False
+    assert result.blocks_gate is True
+    assert result.matched_name is None
+
+
+def test_courtlistener_client_several_clusters_is_ambiguous():
+    client, _ = _client_replaying("courtlistener_lookup_ambiguous.json")
+    assert client.verify("678 F. Supp. 3d 443").status == "ambiguous"
+
+
+def test_verify_all_gate_blocks_ambiguous_like_unverified():
+    client, _ = _client_replaying("courtlistener_lookup_ambiguous.json")
+    gate = verify_all_gate(_DOC, resolver=client)
+    assert gate.allowed is False
+    assert gate.blocked_citations == ("678 F. Supp. 3d 443",)
+    assert gate.results[0].status == "ambiguous"
+
+
+# --- Recorded human attestation -------------------------------------------
+# Citations a resolver cannot cover (Westlaw, Lexis, public-domain, and
+# statutes) may pass the gate on a persisted human attestation naming who
+# checked, when, and from what source. Nothing else may.
+
+from hermes_legal import db  # noqa: E402
+from hermes_legal.citations import (  # noqa: E402
+    CitationAttestation,
+    attestation_class,
+    load_attestations,
+    record_attestation,
+)
+
+ATTESTED_BY = "catduck"
+ATTESTED_AT = "2026-11-09T10:00:00"
+SOURCE = "Westlaw (checked by hand)"
+
+
+def _attest(citation, **kwargs):
+    return CitationAttestation(
+        citation=citation, attested_by=ATTESTED_BY, source=SOURCE,
+        attested_at=ATTESTED_AT, **kwargs)
+
+
+@pytest.mark.parametrize("citation,expected", [
+    ("42 U.S.C. § 1983", "statute"),
+    ("2019 WL 4639462", "westlaw"),
+    ("2020 U.S. Dist. LEXIS 456", "lexis"),
+    ("2013 IL App (1st) 111279-U", "public_domain"),
+    ("678 F. Supp. 3d 443", None),
+    ("12 Fake Rptr. 345", None),
+])
+def test_attestation_class_only_for_uncoverable_classes(citation, expected):
+    assert attestation_class(citation) == expected
+
+
+def test_record_attestation_persists_who_when_and_source(tmp_path):
+    conn = db.connect(tmp_path / "legal.db")
+    record = record_attestation(
+        conn, "42 U.S.C. § 1983", attested_by=ATTESTED_BY, source="United States Code (govinfo)",
+        attested_at=ATTESTED_AT)
+    assert record.citation == "42 U.S.C. § 1983"
+    loaded = load_attestations(conn)
+    saved = loaded["42 U.S.C. § 1983"]
+    assert saved.attested_by == ATTESTED_BY
+    assert saved.attested_at == ATTESTED_AT
+    assert saved.source == "United States Code (govinfo)"
+
+
+def test_record_attestation_requires_who_and_source(tmp_path):
+    conn = db.connect(tmp_path / "legal.db")
+    with pytest.raises(ValueError):
+        record_attestation(conn, "42 U.S.C. § 1983", attested_by="", source=SOURCE)
+    with pytest.raises(ValueError):
+        record_attestation(conn, "42 U.S.C. § 1983", attested_by=ATTESTED_BY, source="")
+
+
+def test_record_attestation_rejected_for_ordinary_case_citation(tmp_path):
+    conn = db.connect(tmp_path / "legal.db")
+    with pytest.raises(ValueError):
+        record_attestation(conn, "678 F. Supp. 3d 443", attested_by=ATTESTED_BY, source=SOURCE)
+
+
+@pytest.mark.parametrize("text,citation", [
+    ("Under 42 U.S.C. § 1983, plaintiff sues.", "42 U.S.C. § 1983"),
+    ("Martinez v. Delta Airlines, 2019 WL 4639462 (Tex. App. Sept. 25, 2019).", "2019 WL 4639462"),
+    ("Order at 2020 U.S. Dist. LEXIS 456.", "2020 U.S. Dist. LEXIS 456"),
+    ("Shaboon v. Egyptair, 2013 IL App (1st) 111279-U.", "2013 IL App (1st) 111279-U"),
+])
+def test_gate_accepts_attestation_for_uncoverable_classes(text, citation):
+    gate = verify_all_gate(text, resolver=OfflineResolver({}),
+                           attestations={citation: _attest(citation)})
+    assert gate.allowed is True, gate.message
+    assert gate.results[0].status == "attested"
+    assert ATTESTED_BY in gate.results[0].detail
+    assert SOURCE in gate.results[0].detail
+
+
+def test_gate_accepts_persisted_attestation_loaded_from_db(tmp_path):
+    conn = db.connect(tmp_path / "legal.db")
+    record_attestation(conn, "2019 WL 4639462", attested_by=ATTESTED_BY,
+                       source=SOURCE, attested_at=ATTESTED_AT)
+    gate = verify_all_gate(
+        "Martinez v. Delta Airlines, 2019 WL 4639462 (Tex. App. Sept. 25, 2019).",
+        resolver=OfflineResolver({}), attestations=load_attestations(conn))
+    assert gate.allowed is True, gate.message
+
+
+def test_gate_does_not_accept_attestation_for_ordinary_case_citation():
+    citation = "678 F. Supp. 3d 443"
+    gate = verify_all_gate(_DOC, resolver=OfflineResolver({}),
+                           attestations={citation: _attest(citation)})
+    assert gate.allowed is False
+    assert gate.results[0].status == "unverified"
+
+
+def test_attestation_never_upgrades_a_not_found_case_citation():
+    citation = "999 F.3d 9999"
+    gate = verify_all_gate(f"Invented authority at {citation}.",
+                           resolver=_fixture_resolver(),
+                           attestations={citation: _attest(citation)})
+    assert gate.allowed is False
+    assert gate.results[0].status == "not_found"
+
+
+def test_attestation_never_upgrades_a_not_found_statute():
+    citation = "42 U.S.C. § 1983"
+    resolver = OfflineResolver({citation: {"status": "not_found"}})
+    gate = verify_all_gate("Under 42 U.S.C. § 1983, plaintiff sues.",
+                           resolver=resolver,
+                           attestations={citation: _attest(citation)})
+    assert gate.allowed is False
+    assert gate.results[0].status == "not_found"
+

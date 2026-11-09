@@ -1,6 +1,14 @@
 """`legal doctor` runs offline and reports every integration as ok, missing,
 off, or warn. 'off' is a deliberate setting and never fails the run.
 
+Each check is required or optional. Only a missing required item fails the
+run (``run`` counts those, and the CLI exits non-zero on a non-zero count):
+today the only required item is Python 3.12+. Optional integrations —
+editors, OCR, local-model runtimes, the CourtListener token — are still
+printed as ``missing`` lines with their hints, but a healthy install can
+lack every one of them; several are absent by design, and LOCAL-ONLY work
+needs no token at all.
+
 Doctor also carries the privacy warnings: a cloud provider whose
 terms-checked date is stale, and a STANDARD-tier provider selected for a
 matter whose ceiling is LOCAL_ONLY. Warnings are reported as ``warn`` lines
@@ -11,13 +19,14 @@ from datetime import date
 
 from . import providers as providers_module
 
+# (name, check, hint, required) — only a missing required check fails the run.
 CHECKS = [
-    ("Python 3.12+", lambda: sys.version_info >= (3, 12), "Install Python 3.12 or newer."),
-    ("LibreOffice (DOCX to PDF, fallback editor)", lambda: bool(shutil.which("soffice")), "Install LibreOffice, or use ONLYOFFICE as the editor."),
-    ("ONLYOFFICE (OOXML-native editing)", lambda: bool(shutil.which("onlyoffice") or shutil.which("desktopeditors")), "Optional: LibreOffice covers editing; ONLYOFFICE gives the closest Word fidelity."),
-    ("Tesseract OCR", lambda: bool(shutil.which("tesseract")), "Install Tesseract for scanned documents."),
-    ("Ollama (local models)", lambda: bool(shutil.which("ollama")), "Install Ollama or LM Studio for LOCAL-ONLY inference. Without one, no AI features run — by design."),
-    ("CourtListener token", lambda: False, "Optional: add a free CourtListener token in Settings for citation verification."),
+    ("Python 3.12+", lambda: sys.version_info >= (3, 12), "Install Python 3.12 or newer.", True),
+    ("LibreOffice (DOCX to PDF, fallback editor)", lambda: bool(shutil.which("soffice")), "Install LibreOffice, or use ONLYOFFICE as the editor.", False),
+    ("ONLYOFFICE (OOXML-native editing)", lambda: bool(shutil.which("onlyoffice") or shutil.which("desktopeditors")), "Optional: LibreOffice covers editing; ONLYOFFICE gives the closest Word fidelity.", False),
+    ("Tesseract OCR", lambda: bool(shutil.which("tesseract")), "Install Tesseract for scanned documents.", False),
+    ("Ollama (local models)", lambda: bool(shutil.which("ollama")), "Install Ollama or LM Studio for LOCAL-ONLY inference. Without one, no AI features run — by design.", False),
+    ("CourtListener token", lambda: False, "Optional: add a free CourtListener token in Settings for citation verification.", False),
 ]
 
 
@@ -71,11 +80,11 @@ def privacy_warnings(today=None, *, selected_provider=None, matter_ceiling=None,
 
 def run(today=None, *, selected_provider=None, matter_ceiling=None, catalog=None):
     lines, missing = [], 0
-    for name, ok_fn, hint in CHECKS:
+    for name, ok_fn, hint, required in CHECKS:
         try: ok = bool(ok_fn())
         except Exception: ok = False
         lines.append(f"{'ok     ' if ok else 'missing'}  {name}" + ("" if ok else f" — {hint}"))
-        missing += 0 if ok else 1
+        missing += 1 if required and not ok else 0
     for warning in privacy_warnings(
         today, selected_provider=selected_provider,
         matter_ceiling=matter_ceiling, catalog=catalog,

@@ -55,7 +55,11 @@ still a separate item; this corpus proves structure, not pixels.
   surviving text is not redaction), and `verify_redaction` re-checks the
   result three ways — exact, case-insensitive, and whitespace-normalized —
   so a phrase split across a line break still fails verification.
-  `legal redact-verify <text-file> <phrase>...` runs that check on an
-  extracted text file and exits nonzero when anything remains.
+  `legal redact-verify <file> <phrase>...` runs that check and exits
+  nonzero when anything remains. Given a real PDF it verifies the text
+  layer re-extracted from the PDF bytes (and refuses, exit 2, when the
+  `pdf` extra is missing); given a plain text file it says plainly that
+  no PDF was checked, because a text file passing proves nothing about
+  any PDF.
 - Reading a real PDF's text layer (`extract_text_layer`) uses the optional
   `pdf` extra, `pypdf`. The plan and verification logic never needs it.
