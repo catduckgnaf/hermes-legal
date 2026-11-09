@@ -34,7 +34,7 @@ body:
   - type: textarea
     id: version
     attributes:
-      label: hermes-legal version
+      label: Hermes Legal version
       description: Release version or commit SHA, and whether this is Linux or Windows, the Hermes plugin, MCP, or the standalone app.
     validations:
       required: true

@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- The product name is confirmed as **Hermes Legal**. Display text everywhere
+  (README, docs, plugin descriptions, site name, CLI description) now uses
+  Hermes Legal; technical identifiers (`hermes-legal` repository and package,
+  `hermes_legal`, `HERMES_LEGAL_*`, `hermes-legal://`) are the same name in
+  kebab, snake and upper-snake case and do not change.
+
 ## [0.1.0] - 2026-11-09
 
 ### Added

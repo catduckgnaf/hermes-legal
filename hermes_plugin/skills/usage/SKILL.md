@@ -1,8 +1,8 @@
 ---
 name: hermes-legal:usage
-description: Use hermes-legal's legal_* tools for matters, documents, citations and deadlines. Local-first; writes need approval.
+description: Use Hermes Legal's legal_* tools for matters, documents, citations and deadlines. Local-first; writes need approval.
 ---
-# hermes-legal usage
+# Hermes Legal usage
 
 - Reads are local and return exactly what the matching `legal` CLI command prints.
 - Never state that a citation is real, good law, or supportive of a proposition

@@ -1,0 +1,1 @@
+{"_fixture_note":"Synthetic fixture in the documented CourtListener citation-lookup response shape for an invented citation. Not scraped.","response":[{"citation":"999 F.3d 9999","clusters":[],"error_message":"Unable to find a citation matching 999 F.3d 9999.","status":404}]}

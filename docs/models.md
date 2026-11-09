@@ -27,3 +27,79 @@ retention (eligible endpoints, by approval); Azure OpenAI; AWS Bedrock;
 Groq and Fireworks for open models. OpenRouter is offered only in a
 zero-retention-provider allowlist mode — per-provider variance is the trap, and
 Together with storage left on is **not** zero retention.
+
+## Enforcement in code
+
+The ceiling is enforced by the provider router in
+`hermes_legal.providers`, not by a settings page:
+
+- `route(ceiling, requested)` returns a provider only when its tier is at
+  or below the matter ceiling. With no request it returns the first
+  allowed provider, which is always a local one.
+- A provider above the ceiling raises `PrivacyViolationError`. A
+  BLOCKED-tier provider — and any provider that trains on data, whatever
+  tier it claims — raises `BlockedProviderError` at every ceiling.
+  Routing by name resolves through the catalog, so a blocked product
+  cannot be laundered by asserting a lower tier.
+- OpenRouter raises unless zero-retention allowlist mode is enabled
+  explicitly (`zero_retention_allowlist=True`).
+- An unknown ceiling or tier raises `ValueError`: a typo fails closed
+  instead of comparing as allowed. BLOCKED is a provider tier, never a
+  valid matter ceiling.
+- Every catalog entry carries a `terms_checked` date; an entry with a
+  missing or malformed date cannot be constructed.
+- A LOCAL_ONLY provider is verified local, not just labeled local. Each
+  local catalog entry carries the endpoint its runtime listens on
+  (Ollama at `http://127.0.0.1:11434`, LM Studio at
+  `http://127.0.0.1:1234/v1`). Before a local provider is routed, its
+  endpoint host must resolve to loopback — `localhost`, 127.0.0.0/8 or
+  ::1. A name that resolves to any non-loopback address, or does not
+  resolve at all, is refused. Ollama's own `OLLAMA_HOST` environment
+  variable may override the Ollama endpoint, and an explicit endpoint
+  may be passed to the router, but both are honored only after the same
+  loopback check, so pointing a "local" runtime at another machine
+  fails closed instead of quietly sending matter data there.
+- A cloud-routed model tag is refused for a LOCAL_ONLY provider: a
+  model such as `llama3.1:cloud` or `gpt-oss:120b-cloud` runs in
+  Ollama's cloud even though the endpoint is local, so routing,
+  preview and AI-log calls carrying one raise `PrivacyViolationError`.
+
+## Raising a matter ceiling
+
+`matters.raise_matter_ceiling` is the only recorded way to raise a
+matter's ceiling, and it requires both who raised it and the client
+consent behind the raise. The raise updates the matter and appends a
+row to the `ceiling_raises` table (matter, previous and new ceiling,
+who raised it, the consent note, and the time); `list_ceiling_raises`
+reads the records back. Lowering or re-setting a ceiling through this
+function is refused — it records raises only.
+
+Run `legal models` to see the full catalog grouped by tier with each
+provider's retention and terms-checked date, `legal models --ceiling
+LOCAL_ONLY` to see only what a LOCAL_ONLY matter may use, and
+`legal models --json` for the machine-readable form.
+
+## Pre-send preview
+
+Every Ask and send is preceded by a preview built by `build_preview`:
+the tier badge, the provider, the matter ceiling, the model, exactly
+which files and chunks would go out (with character counts), the
+retention terms, and whether anything leaves the device at all. The
+preview is built only after the router has allowed the provider, so a
+refused send produces an error, never a preview that looks approved.
+
+## Per-matter AI log
+
+Each allowed call is written to the `ai_log` table with the matter,
+provider, tier, model, action and time. `log_ai_use` enforces the
+matter's stored ceiling before writing, so a refused call is never
+recorded as if it happened, and `route_and_log` routes and logs in one
+enforced step. The log is exportable per matter as JSON or CSV
+(`export_ai_log`).
+
+## Doctor warnings
+
+`legal doctor` warns, offline, when a cloud provider's terms-checked
+date is stale (older than 90 days) and when a STANDARD-tier provider is
+selected for a LOCAL_ONLY matter. Warnings are `warn` lines: they name
+the problem without failing the integration checks.

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=hermes-legal
+Comment=Local-first legal work desktop: matter workspaces and document editing with nothing shared by default
+Exec=hermes-legal
+Icon=com.catduckgnaf.hermeslegal
+Terminal=false
+Type=Application
+Categories=Office;
+MimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/pdf;
+StartupWMClass=com.catduckgnaf.hermeslegal
