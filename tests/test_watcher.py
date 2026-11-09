@@ -130,3 +130,38 @@ def test_poll_and_preserve_returns_changes_and_copies(tmp_path):
     assert [c.kind for c in changes] == ["modified"]
     assert len(copies) == 1
     assert (folder / "doc.md").read_text() == "external version"
+
+
+def test_guarded_write_never_overwrites_a_file_created_outside_the_app(tmp_path):
+    import pathlib
+    from hermes_legal import db, matters
+    conn = db.connect(tmp_path / "legal.db")
+    folder = tmp_path / "matter"
+    folder.mkdir()
+    (folder / "a.txt").write_text("a", encoding="utf-8")
+    mid = matters.open_folder_as_matter(conn, folder)
+    (folder / "new.docx").write_text("external work", encoding="utf-8")
+    result = watcher.write_document(conn, mid, "new.docx", "app content")
+    assert result.status == "conflict"
+    assert (folder / "new.docx").read_text(encoding="utf-8") == "external work"
+    assert pathlib.Path(result.conflict_copy).read_text(encoding="utf-8") == "app content"
+
+
+def test_files_added_to_a_folder_that_was_empty_at_open_are_detected(tmp_path):
+    from hermes_legal import db, matters
+    conn = db.connect(tmp_path / "legal.db")
+    folder = tmp_path / "matter"
+    folder.mkdir()
+    mid = matters.open_folder_as_matter(conn, folder)
+    (folder / "b.txt").write_text("b", encoding="utf-8")
+    assert [(c.relative_path, c.kind) for c in watcher.detect_changes(conn, mid)] == [("b.txt", "created")]
+
+
+def test_guarded_write_leaves_no_temporary_files(tmp_path):
+    from hermes_legal import db, matters
+    conn = db.connect(tmp_path / "legal.db")
+    folder = tmp_path / "matter"
+    folder.mkdir()
+    mid = matters.open_folder_as_matter(conn, folder)
+    assert watcher.write_document(conn, mid, "sub/a.txt", "x").status == "written"
+    assert sorted(p.name for p in folder.rglob("*") if p.is_file()) == ["a.txt"]

@@ -183,3 +183,14 @@ def test_demo_matter_lists_its_documents_from_disk(tmp_path):
     documents = matters.list_documents(conn, mid)
     assert "README.md" in documents
     assert "intake.md" in documents
+
+
+@pytest.mark.parametrize("uri", [
+    "hermes-legal://evil.example/open?path=/tmp/x",
+    "hermes-legal://open?path=//attacker/share",
+    "hermes-legal://open?path=%5C%5Cattacker%5Cshare",
+    "hermes-legal://open?path=relative/path",
+])
+def test_deep_links_to_other_hosts_network_or_relative_paths_are_refused(uri):
+    with pytest.raises(ValueError):
+        matters.parse_deep_link(uri)

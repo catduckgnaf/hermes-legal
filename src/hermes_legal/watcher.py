@@ -15,8 +15,10 @@ conflict copy next to the original instead, so both versions survive
 and a person decides which one wins.
 """
 import hashlib
+import os
 import pathlib
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -78,7 +80,7 @@ def scan_folder(folder):
             digest = hash_file(path)
         except OSError:
             continue
-        relative = str(path.relative_to(root))
+        relative = path.relative_to(root).as_posix()
         states[relative] = FileState(relative, digest, stat.st_size, stat.st_mtime_ns)
     return states
 
@@ -95,6 +97,11 @@ def take_snapshot(conn, matter_id):
     ensure_workspace_tables(conn)
     states = scan_folder(folder)
     conn.execute("DELETE FROM document_snapshots WHERE matter_id=?", (matter_id,))
+    conn.execute(
+        "INSERT INTO document_snapshot_marks (matter_id) VALUES (?) "
+        "ON CONFLICT(matter_id) DO UPDATE SET taken_at=datetime('now')",
+        (matter_id,),
+    )
     conn.executemany(
         "INSERT INTO document_snapshots (matter_id, path, sha256, size, mtime_ns) "
         "VALUES (?, ?, ?, ?, ?)",
@@ -131,6 +138,31 @@ def _update_snapshot_entry(conn, matter_id, state):
     conn.commit()
 
 
+def _snapshot_taken(conn, matter_id):
+    """Whether a snapshot exists, even one of a folder that was empty."""
+    ensure_workspace_tables(conn)
+    return conn.execute(
+        "SELECT 1 FROM document_snapshot_marks WHERE matter_id=?", (matter_id,)
+    ).fetchone() is not None
+
+
+def _write_atomic(target, data):
+    """Replace ``target`` in one step, so a crash cannot leave half a document."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    handle, temp_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(handle, "wb") as out:
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temp_name, target)
+    except BaseException:
+        pathlib.Path(temp_name).unlink(missing_ok=True)
+        raise
+
+
 def detect_changes(conn, matter_id):
     """Compare a matter folder against its snapshot.
 
@@ -142,7 +174,7 @@ def detect_changes(conn, matter_id):
     if folder is None:
         raise ValueError(f"no such matter: {matter_id}")
     snapshot = load_snapshot(conn, matter_id)
-    if not snapshot:
+    if not snapshot and not _snapshot_taken(conn, matter_id):
         return []
     current = scan_folder(folder)
     changes = []
@@ -210,9 +242,10 @@ def preserve_conflict_copies(conn, matter_id, stamp=None):
 def write_document(conn, matter_id, relative_path, content):
     """Write a document inside a matter folder, guarded against conflicts.
 
-    If the file on disk still matches the snapshot (or is new), the
-    content is written and the snapshot entry is updated. If the file
-    changed externally since the snapshot, the original is not touched:
+    If the file on disk still matches the snapshot (or does not exist yet),
+    the content is written atomically and the snapshot entry is updated. If
+    the file changed or appeared externally since the snapshot, it is not
+    touched:
     the proposed content lands in a conflict copy instead, and the
     returned result has status ``conflict`` and names that copy.
     """
@@ -224,22 +257,25 @@ def write_document(conn, matter_id, relative_path, content):
     if not target.is_relative_to(root):
         raise ValueError(f"document path escapes the matter folder: {relative_path}")
     data = content.encode("utf-8") if isinstance(content, str) else bytes(content)
-    relative = str(target.relative_to(root))
+    relative = target.relative_to(root).as_posix()
     snapshot = load_snapshot(conn, matter_id)
     before = snapshot.get(relative)
-    if target.is_file() and before is not None:
+    if target.is_file():
+        # A file the snapshot has never seen was created outside the app, so
+        # it is someone's work just as much as an edited file is.
         current_hash = hash_file(target)
-        if current_hash != before.sha256 and current_hash != hash_bytes(data):
+        expected = before.sha256 if before is not None else None
+        if current_hash != expected and current_hash != hash_bytes(data):
             copy_path = conflict_copy_path(target)
             copy_path.write_bytes(data)
             return WriteResult(
                 status="conflict",
                 path=str(target),
                 conflict_copy=str(copy_path),
-                changes=[Change(relative, "modified", before.sha256, current_hash)],
+                changes=[Change(relative, "modified" if before else "created",
+                                before.sha256 if before else "", current_hash)],
             )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
+    _write_atomic(target, data)
     stat = target.stat()
     _update_snapshot_entry(
         conn, matter_id, FileState(relative, hash_file(target), stat.st_size, stat.st_mtime_ns)

@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS matter_open_files (
   opened_at TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (matter_id, path)
 );
+CREATE TABLE IF NOT EXISTS document_snapshot_marks (
+  matter_id INTEGER PRIMARY KEY REFERENCES matters(id),
+  taken_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS document_snapshots (
   matter_id INTEGER NOT NULL REFERENCES matters(id),
   path TEXT NOT NULL,
@@ -148,6 +152,10 @@ def open_file_as_matter(conn, file_path, name=None, privacy_ceiling=None):
     return matter_id
 
 
+def _is_absolute_local(path):
+    return pathlib.PurePosixPath(path).is_absolute() or pathlib.PureWindowsPath(path).is_absolute()
+
+
 def parse_deep_link(uri):
     """Parse a ``hermes-legal://`` deep link into the local path it names.
 
@@ -160,12 +168,17 @@ def parse_deep_link(uri):
     if not isinstance(uri, str) or not uri.startswith(f"{DEEP_LINK_SCHEME}://"):
         return None
     parsed = urllib.parse.urlparse(uri)
-    if parsed.netloc not in ("open", "matter") and parsed.path not in ("/open", ""):
+    if (parsed.netloc, parsed.path) not in (("open", ""), ("matter", "/open")):
         raise ValueError(f"unsupported deep link: {uri}")
     values = urllib.parse.parse_qs(parsed.query).get("path")
     if not values or not values[0]:
         raise ValueError(f"deep link carries no path: {uri}")
-    return values[0]
+    target = values[0]
+    # Links can come from a web page or an email. Touching a network path
+    # makes Windows send the user's credentials to that host.
+    if target.startswith(("\\\\", "//")) or not _is_absolute_local(target):
+        raise ValueError(f"deep link must name an absolute local path: {uri}")
+    return target
 
 
 def open_as_matter(conn, target, name=None, privacy_ceiling=None):
@@ -241,7 +254,7 @@ def iter_document_paths(root):
         return []
     return sorted(
         (p for p in root.rglob("*") if p.is_file()),
-        key=lambda p: str(p.relative_to(root)),
+        key=lambda p: p.relative_to(root).as_posix(),
     )
 
 
@@ -268,7 +281,7 @@ def list_document_records(conn, matter_id):
         records.append(
             {
                 "path": str(path),
-                "relative_path": str(path.relative_to(root)),
+                "relative_path": path.relative_to(root).as_posix(),
                 "name": path.name,
                 "kind": _document_kind(path),
                 "size": stat.st_size,
