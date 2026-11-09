@@ -31,7 +31,9 @@ the device and to whom.
 
 - `BaseConnector` — doctor check (`ok` / `missing` / `off` / `warn`; `off`
   never fails the run), a `DataFlowLabel` stating what leaves the device
-  and to whom, a per-matter enable flag (`enabled_matters`), and writes
+  and to whom, a per-matter enable flag (`enabled_matters`; when a
+  connector is restricted to specific matters, a call with no
+  `matter_id` fails closed instead of skipping the check), and writes
   queued as `PendingAction` objects. A pending action performs no
   network call; only `approve(approved_by)` with a named human runs it.
 - Credentials — read only through a credential store: the OS keychain
@@ -46,10 +48,10 @@ the device and to whom.
 
 | Connector | Reads | Writes |
 |---|---|---|
-| Clio (`ClioConnector`, REST v4, OAuth 2.0 via `clio_oauth`) | Matters, contacts, calendar entries, bills | Create matter / contact — pending actions only |
+| Clio (`ClioConnector`, REST v4, OAuth 2.0 via `clio_oauth`) | Matters, contacts, calendar entries, bills — list calls follow `meta.paging.next` and return every page, not only the first | Create matter / contact — pending actions only |
 | DocuSign (`DocuSignConnector`, REST v2.1, OAuth 2.0 via `docusign_oauth`) | Envelope list and status | Envelope creation is a pending action only; approving it is the send decision — nothing is sent before that |
 | CourtListener / RECAP (`CourtListenerConnector`) | Free RECAP docket and document search | None |
-| PACER (`PacerConnector`) | Approved document pull only | Paid pull: RECAP is always checked first, a miss returns a cost estimate only ($0.10 per page, $3.00 per-document cap), and a pull requires a named human approval |
+| PACER (`PacerConnector`) | Approved document pull only | Paid pull: a RECAP check through `lookup_document` must first return a candidate (a search hit is a candidate, not the confirmed document), a miss returns a cost estimate only ($0.10 per page, $3.00 per-document cap), and a pull requires a named human approval |
 
 Documenso and DocuSeal are the open, self-hostable signing alternatives;
 their REST shape differs from DocuSign, so they are recorded in
