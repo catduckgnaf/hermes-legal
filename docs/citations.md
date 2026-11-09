@@ -22,6 +22,18 @@ blocks the document until every citation has actually been checked.
   quotation appears in the retrieved text.
 - `not_found` — a resolver looked and found no matching authority. An
   invented citation reports `not_found`.
+- `ambiguous` — a resolver returned several candidate authorities for one
+  citation, so no single match can be asserted. It blocks the Verify-All
+  gate exactly like `unverified` until a human determines which candidate,
+  if any, is the cited authority.
+- `attested` — a citation class a resolver cannot cover (a statute, or a
+  Westlaw, Lexis, or public-domain citation) was checked by a named human
+  and that check was recorded: who checked it, when, and from what source.
+  Attestations are persisted in the `citation_attestations` table
+  (`record_attestation` / `load_attestations` in
+  `hermes_legal.citations`). An attestation is never accepted for an
+  ordinary case citation, and it never upgrades a citation a resolver
+  returned as `not_found`.
 - `history_unknown` — the subsequent-history dimension of every result.
 
 **Subsequent history is always unknown here.** Hermes Legal has no
@@ -47,6 +59,14 @@ Offline development and CI use recorded fixture JSON through the same
 parsing code. Live calls happen only in tests marked `live`, which the
 default test run excludes.
 
+`legal cite-check` runs this resolver when a token is configured in the
+environment, and reports each citation with the status the resolver
+returned; a response with several clusters reports `ambiguous`, never a
+match on the first cluster. With no token configured, `legal cite-check`
+runs no resolver at all: it stays fully offline and reports every citation
+as `unverified`. The resolver is injectable in code
+(`main(argv, cite_resolver=...)`) so tests never need a network or a token.
+
 ## Bluebook-style formatter limits
 
 The formatter is deterministic code, not a model. Its limits are stated in
@@ -66,9 +86,11 @@ The formatter is deterministic code, not a model. Its limits are stated in
 
 `verify_all_gate` (and `assert_verify_all`, which raises and names the
 offenders) blocks export, print, and filing-bundle preparation while any
-citation in the document is `unverified` or `not_found`. The verdict names
+citation in the document is `unverified`, `not_found`, or `ambiguous`. The verdict names
 each blocking citation. A document whose citations all report `exists` or
-`quote_verified` passes; a document with no citations passes. History
+`quote_verified` passes, as does one whose only unchecked citations carry
+a recorded human attestation for a class a resolver cannot cover
+(statutes, Westlaw, Lexis, and public-domain citations); a document with no citations passes. History
 being unknown warns but does not block on its own, because history is
 unknown for every citation in this build — blocking on it would block
 everything while adding no information.
