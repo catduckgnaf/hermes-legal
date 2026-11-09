@@ -4,12 +4,12 @@ theme:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Deadlines: deadlines.md
   - Architecture: architecture.md
   - Security: security.md
   - AI modes: ai-modes.md
   - Models: models.md
   - Integrations: integrations.md
-  - Deadlines: deadlines.md
   - Desktop: desktop.md
   - Roadmap: roadmap.md
   - Research: research/foundation-report.md

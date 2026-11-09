@@ -136,6 +136,7 @@ class Calculation:
     service_method: str
     steps: tuple
     warning: str = VERIFY_WARNING
+    is_filing: bool = False
 
     def to_dict(self):
         return {
@@ -148,6 +149,7 @@ class Calculation:
             "service_method": self.service_method,
             "steps": list(self.steps),
             "warning": self.warning,
+            "is_filing": self.is_filing,
         }
 
 
@@ -239,7 +241,7 @@ def calculate(rule_id, trigger_date, service_method="personal",
         rule_id=rule["id"], citation=rule["citation"],
         rule_source=rule_source_text(rule), trigger_date=trigger_date,
         due_date=last, period_days=period, service_method=method,
-        steps=tuple(steps))
+        steps=tuple(steps), is_filing=bool(rule.get("is_filing")))
 
 
 # ---------------------------------------------------------------- extraction
@@ -256,7 +258,9 @@ _EXPLICIT_PATTERNS = [
     re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b"),
 ]
 _RELATIVE_RE = re.compile(
-    r"\bwithin\s+(\d{1,3})\s+days?\s+(?:after|of|from)\s+([^.;\n]{3,80})",
+    r"\b(?:within|no\s+later\s+than|not\s+later\s+than|not\s+more\s+than)\s+"
+    r"(?:[a-z-]+\s+\()?(\d{1,3})\)?\s+(?:calendar\s+|court\s+|business\s+)?days?\s+"
+    r"(?:after|of|from|following)\s+([^.;\n]{3,80})",
     re.IGNORECASE)
 _FILING_RE = re.compile(r"\b(file|filed|filing)\b", re.IGNORECASE)
 
@@ -431,7 +435,8 @@ def confirm_calculation(conn, matter_id, calculation, title, confirmed_by,
     row keeps the citation, the rule source, and the full step list, so the
     arithmetic stays auditable in the database.
     """
-    _check_confirmers(is_filing, confirmed_by, second_confirmer)
+    # The rule data can only raise this requirement, never lower it.
+    _check_confirmers(is_filing or calculation.is_filing, confirmed_by, second_confirmer)
     return _insert(conn, matter_id, calculation.due_date.isoformat(), title,
                    calculation.rule_source, "calculated", confirmed_by,
                    second_confirmer, "", calculation.rule_id,

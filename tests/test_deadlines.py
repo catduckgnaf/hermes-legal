@@ -62,7 +62,7 @@ def test_worked_example_1_answer_after_personal_service():
     joined = "\n".join(calc.steps)
     assert "exclude the trigger day" in joined
     assert "2026-03-02 + 21 days = 2026-03-23" in joined
-    assert "does not apply" in joined  # Rule 6(d), personal service
+    assert "adds 3 days" not in joined  # Rule 6(d) never reaches Rule 4 service
     assert calc.warning == deadlines.VERIFY_WARNING
 
 
@@ -229,3 +229,30 @@ def test_ics_export_contains_only_confirmed_deadlines(tmp_path):
     assert "Answer due" in ics and "20260601" not in ics
     assert "Unverified thing" not in ics
     assert deadlines.VERIFY_WARNING.split(".")[0] in ics.replace("\\,", ",")
+
+
+def test_answer_to_complaint_gets_no_rule_6d_days_when_mailed():
+    """Rule 6(d) reaches service under Rule 5(b)(2)(C), (D), (F), not Rule 4."""
+    personal = deadlines.calculate("frcp-12a1ai-answer-after-service", "2026-03-02", "personal")
+    mailed = deadlines.calculate("frcp-12a1ai-answer-after-service", "2026-03-02", "mail")
+    assert mailed.due_date == personal.due_date == datetime.date(2026, 3, 23)
+
+
+def test_rule_marked_filing_requires_two_confirmers_without_caller_flag(tmp_path):
+    from hermes_legal import db
+    conn = db.connect(tmp_path / "legal.db")
+    conn.execute("INSERT INTO matters (id, name, folder) VALUES (1, 'Demo', 'x')")
+    calculation = deadlines.calculate("frcp-59b-new-trial-motion", "2026-03-02")
+    with pytest.raises(ValueError, match="dual entry"):
+        deadlines.confirm_calculation(conn, 1, calculation, "New trial", "A. Lawyer")
+    assert deadlines.confirm_calculation(conn, 1, calculation, "New trial", "A. Lawyer", "B. Lawyer")
+
+
+@pytest.mark.parametrize("text,days", [
+    ("Defendant shall respond within thirty (30) days of service.", 30),
+    ("Reply is due no later than 14 days after the motion.", 14),
+    ("Objections are due not later than 7 calendar days following entry.", 7),
+])
+def test_common_period_phrasings_are_extracted(text, days):
+    found = [c for c in deadlines.extract_candidates(text) if c.kind == "relative_period"]
+    assert [c.period_days for c in found] == [days]
