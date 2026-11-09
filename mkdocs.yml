@@ -6,10 +6,10 @@ nav:
   - Getting started: getting-started.md
   - Architecture: architecture.md
   - Security: security.md
+  - Playbooks: playbooks.md
   - AI modes: ai-modes.md
   - Models: models.md
   - Integrations: integrations.md
-  - Playbooks: playbooks.md
   - Desktop: desktop.md
   - Roadmap: roadmap.md
   - Research: research/foundation-report.md

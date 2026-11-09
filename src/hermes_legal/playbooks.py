@@ -290,13 +290,24 @@ def parse_playbook(text: str, source: str = "") -> Playbook:
             kind = _KIND_ALIASES.get(kind_raw)
             if kind is None:
                 raise PlaybookError(f"playbook {source or '<text>'}: rule {current_id!r} has unknown kind {kind_raw!r}")
+            patterns = tuple(fields.get("patterns") or fields.get("pattern") or [])
+            for term in (*patterns, *(fields.get("must_contain") or [])):
+                if len(term) >= 2 and term.startswith("/") and term.endswith("/"):
+                    try:
+                        re.compile(term[1:-1])
+                    except re.error as exc:
+                        # A rule that can never match reads as a clean review.
+                        raise PlaybookError(
+                            f"playbook {source or '<text>'}: rule {current_id!r} "
+                            f"has an invalid pattern {term!r}: {exc}"
+                        ) from exc
             rules.append(Rule(
                 id=current_id,
                 title=str(fields.get("title") or ""),
                 kind=kind,
                 severity=str(fields.get("severity") or "medium").strip().lower(),
                 topic=str(fields.get("topic") or ""),
-                patterns=tuple(fields.get("patterns") or fields.get("pattern") or []),
+                patterns=patterns,
                 must_contain=tuple(fields.get("must_contain") or []),
                 preferred=tuple(fields.get("preferred") or []),
                 acceptable=tuple(fields.get("acceptable") or []),

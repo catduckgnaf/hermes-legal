@@ -268,3 +268,11 @@ def test_adding_a_rule_to_a_playbook_file_adds_a_finding(tmp_path):
     added = [f for f in after.findings if f.rule_id == "forbid-texas-law"]
     assert len(added) == 1
     assert "Governing Law" in added[0].clause_heading
+
+
+def test_invalid_regex_is_a_parse_error_not_a_rule_that_never_fires():
+    import pytest
+    from hermes_legal.playbooks import PlaybookError, parse_playbook
+    text = "id: x\n\n## Rules\n\n### r\nkind: forbidden\npatterns: /perpetu(al/\n"
+    with pytest.raises(PlaybookError, match="invalid pattern"):
+        parse_playbook(text)
