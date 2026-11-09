@@ -1,9 +1,10 @@
-# hermes-legal
+# Hermes Legal
 
 ### Your matters, on your computer, with an AI agent that shares nothing by default.
 
-**Working name.** The permanent name is still being decided; `hermes-legal` is the
-placeholder everything is built under.
+**Name.** The product is **Hermes Legal**. The repository, package and plugin keep
+the derived identifier forms of that name: `hermes-legal`, `hermes_legal`,
+`HERMES_LEGAL_*` — the same name in kebab, snake and upper-snake case.
 
 A local-first desktop for legal work, inspired by
 [hermes-finance](https://github.com/apelabs-dev/hermes-finance) — the same pattern
@@ -12,7 +13,7 @@ A local-first desktop for legal work, inspired by
 
 Hermes is designed for coding. Legal work is different: the document *is* the work
 product, the file in the folder *is* the record, and the contents are privileged.
-So hermes-legal is designed around four rules:
+So Hermes Legal is designed around four rules:
 
 1. **Local by default.** Matters, documents and the database live in a local
    SQLite file and ordinary folders on your own computer. The default AI tier is
@@ -31,7 +32,7 @@ So hermes-legal is designed around four rules:
 > **Not a fork.** This repository was built new, using hermes-finance as
 > architectural inspiration. No hermes-finance code was copied. Both projects are
 > AGPL-3.0. Hermes Agent itself (Nous Research) is MIT and is a separate project;
-> hermes-legal plugs into it the same way hermes-finance does.
+> Hermes Legal plugs into it the same way hermes-finance does.
 
 ## Platforms
 
@@ -88,7 +89,7 @@ check, read-only by default, and writes as pending actions:
   LawPay, UniCourt / Trellis, Notion / Slack, state e-filing bundle prep
 
 Westlaw and Lexis offer no public API for third-party AI applications, so
-hermes-legal does not build on them — it verifies against open corpora instead
+Hermes Legal does not build on them — it verifies against open corpora instead
 and says so honestly. Full table: [docs/integrations.md](docs/integrations.md).
 
 ## Install as a Hermes plugin
@@ -123,13 +124,13 @@ scripts/             check.py gates, contribution and spelling checkers
 ## License
 
 AGPL-3.0-or-later. See [LICENSE](LICENSE). This matters for legal work: anyone
-who runs a modified hermes-legal as a network service must offer their users the
+who runs a modified Hermes Legal as a network service must offer their users the
 source. Local models are downloaded at your request rather than bundled, so each
 model keeps its own license, which the model picker shows.
 
 ## A necessary warning
 
-hermes-legal is a tool for legal work, not a lawyer. It does not provide legal
+Hermes Legal is a tool for legal work, not a lawyer. It does not provide legal
 advice, it must not be described as an "AI lawyer," and every citation, deadline
 and document it produces needs a qualified human to verify it before it is filed,
 sent or relied on. ABA Formal Opinion 512 (2024) is built into the design rather

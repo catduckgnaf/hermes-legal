@@ -2,7 +2,7 @@
 
 ## Decision
 The standalone product is **Tauri 2 + a Python sidecar**. Hermes Desktop itself
-is Electron, and if hermes-legal lived only inside Hermes Desktop, Electron
+is Electron, and if Hermes Legal lived only inside Hermes Desktop, Electron
 would be the answer; as a standalone product for solo and small-firm hardware,
 Tauri's 3-10 MB shell against Electron's 85-150 MB, roughly half the memory,
 Rust capability permissions for privileged files, and built-in signed updater

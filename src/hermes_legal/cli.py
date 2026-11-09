@@ -4,7 +4,7 @@ import argparse, json, sys
 from . import __version__, db, doctor, matters, providers, tooldefs
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="legal", description="hermes-legal: local-first legal work")
+    ap = argparse.ArgumentParser(prog="legal", description="Hermes Legal: local-first legal work")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("doctor", help="check every integration, offline")

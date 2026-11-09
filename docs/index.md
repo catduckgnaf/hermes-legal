@@ -1,4 +1,4 @@
-# hermes-legal
+# Hermes Legal
 
 Local-first legal work: matter workspaces, document editing first, verified citations, and AI that shares no data by default.
 
