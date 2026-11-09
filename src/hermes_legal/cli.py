@@ -14,7 +14,10 @@ def main(argv=None):
     m = sub.add_parser("matter"); m.add_subparsers(dest="sub").add_parser("list")
     c = sub.add_parser("cite-check"); c.add_argument("text")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
-    p = sub.add_parser("models"); p.add_argument("--json", action="store_true")
+    p = sub.add_parser("models", help="privacy tiers, provider catalog, and local models")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--ceiling", choices=["LOCAL_ONLY", "ZERO_RETENTION", "STANDARD"], default=None,
+                   help="only show providers this matter ceiling allows")
     args = ap.parse_args(argv)
     if args.cmd == "doctor":
         lines, missing = doctor.run()
@@ -22,6 +25,41 @@ def main(argv=None):
     if args.cmd == "tools":
         print(json.dumps([{"name": t.name, "write": t.write, "description": t.description} for t in tooldefs.TOOLS], indent=2)); return 0
     if args.cmd == "models":
+        catalog = providers.PROVIDERS
+        if args.ceiling:
+            catalog = providers.allowed_providers(args.ceiling)
+        if args.json:
+            print(json.dumps({
+                "tiers": list(providers.TIERS),
+                "ceiling": args.ceiling,
+                "providers": [
+                    {"name": p.name, "tier": p.tier, "trains_on_data": p.trains_on_data,
+                     "retention": p.retention, "terms_checked": p.terms_checked,
+                     "notes": p.notes,
+                     "allowed_at_ceiling": (providers.allowed(p, args.ceiling) if args.ceiling else None)}
+                    for p in catalog
+                ],
+                "local_models": [
+                    {"name": n, "size": s, "hardware": h, "license": lic, "role": r}
+                    for n, s, h, lic, r in providers.LOCAL_MODELS
+                ],
+            }, indent=2)); return 0
+        heading = "Providers by privacy tier"
+        if args.ceiling:
+            heading += f" (allowed at ceiling {args.ceiling})"
+        print(heading + ":")
+        for tier in providers.TIERS:
+            group = [p for p in catalog if p.tier == tier]
+            if not group:
+                continue
+            print(f"\n{tier}:")
+            for p in group:
+                print(f"  {providers.tier_badge(p)}")
+                print(f"      retention: {p.retention} | terms checked: {p.terms_checked}"
+                      f" | trains on data: {'yes' if p.trains_on_data else 'no'}")
+                if p.notes:
+                    print(f"      {p.notes}")
+        print("\nLocal models:")
         for name, size, hw, lic, role in providers.LOCAL_MODELS:
             print(f"{name:22} {size:10} {hw:42} {lic:24} {role}")
         return 0
