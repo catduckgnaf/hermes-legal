@@ -1,0 +1,14 @@
+site_name: hermes-legal
+theme:
+  name: material
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Architecture: architecture.md
+  - Security: security.md
+  - AI modes: ai-modes.md
+  - Models: models.md
+  - Integrations: integrations.md
+  - Desktop: desktop.md
+  - Roadmap: roadmap.md
+  - Research: research/foundation-report.md

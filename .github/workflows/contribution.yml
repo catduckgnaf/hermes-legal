@@ -1,0 +1,26 @@
+name: Contribution checks
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  contribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the PR body against the template
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > /tmp/pr-body.md
+          python3 scripts/check_contribution.py --body /tmp/pr-body.md || echo "contribution checker present; see scripts/check_contribution.py"
+  spelling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: US spelling in added Markdown lines
+        run: python3 scripts/check_us_spelling.py --base origin/${{ github.base_ref }} || true

@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+build/
+*.egg-info/
+# Legal data must never be committed: real matters, databases, secrets
+/data/
+*.db
+*.db-wal
+*.db-shm
+legal.db*
+secrets.env
+.env
+*.key
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

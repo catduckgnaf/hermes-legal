@@ -1,0 +1,31 @@
+name: Documentation
+description: Report a documentation problem or propose a documentation change.
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Documentation lives in the versioned docs/ tree in this repository.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is wrong or missing
+      description: Name the page and the passage, or the topic that is not covered.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: What should it say instead?
+    validations:
+      required: false
+  - type: checkboxes
+    id: attestations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for this problem.
+          required: true
+        - label: I removed credentials, tokens, real client material and personal data from this report.
+          required: true

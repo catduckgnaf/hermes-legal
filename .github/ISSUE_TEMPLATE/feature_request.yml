@@ -1,0 +1,52 @@
+name: Feature request
+description: Propose a new capability or a change to existing behavior.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For larger changes, this issue is the discussion: scope and safety expectations should be clear here before implementation starts.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What should hermes-legal do? Cover the user-visible flow, the privacy tier involved, and what happens when it cannot comply.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is explicitly in scope and what is out of scope. Link related issues.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know this works? List checkable criteria, including the tests or offline evidence that should demonstrate them.
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Confidentiality and compatibility
+      description: Any effect on privacy ceilings, citation verification, approval gates, or existing matters. Write 'None expected' if there is none.
+    validations:
+      required: false
+  - type: checkboxes
+    id: attestations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for this problem.
+          required: true
+        - label: I removed credentials, tokens, real client material and personal data from this report.
+          required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Project documentation
+    url: https://github.com/catduckgnaf/hermes-legal/tree/main/docs
+    about: Architecture, security, models and integration guides live in the versioned docs — please check there before opening an issue.

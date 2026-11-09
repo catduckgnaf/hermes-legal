@@ -1,0 +1,56 @@
+name: Bug report
+description: Something is not working as documented or expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem.
+        
+        - Search open and closed issues first; duplicates are closed with a link to the canonical issue.
+        - Remove credentials, tokens and all real client material from anything you paste. Use the fictional demo matter to reproduce.
+        - If the problem involves client material reaching a model or connector it should not have reached, say so in the first line so it can be prioritized.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: Describe the observed behavior. State measured facts, and label anything estimated or suspected as such.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: The behavior the documentation or interface led you to expect.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact inputs and flow: the file type, the command or UI path, the matter privacy ceiling, and the settings that matter.
+    validations:
+      required: true
+  - type: textarea
+    id: version
+    attributes:
+      label: hermes-legal version
+      description: Release version or commit SHA, and whether this is Linux or Windows, the Hermes plugin, MCP, or the standalone app.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Relevant log lines or the exact error text, redacted. Do not present a cause as verified when it is a hypothesis.
+    validations:
+      required: true
+  - type: checkboxes
+    id: attestations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for this problem.
+          required: true
+        - label: I removed credentials, tokens, real client material and personal data from this report.
+          required: true

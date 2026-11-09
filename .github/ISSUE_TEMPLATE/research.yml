@@ -1,0 +1,45 @@
+name: Research or evaluation
+description: A question to investigate before committing to an implementation.
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Research issues end with a recommendation, a documentation update, or a follow-up implementation issue — not with code. Never use real client material as research input.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to answer
+      description: The single question this investigation should settle.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: The decision this answer informs.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence to gather
+      description: Measurements, sources or experiments that would settle the question. Separate verified facts from what still needs checking.
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in scope and what is explicitly out of scope.
+    validations:
+      required: true
+  - type: checkboxes
+    id: attestations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for this problem.
+          required: true
+        - label: I removed credentials, tokens, real client material and personal data from this report.
+          required: true

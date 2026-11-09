@@ -1,0 +1,42 @@
+name: hermes-legal
+version: 0.1.0
+description: "Answers legal-work questions from your local hermes-legal database (matters, documents, citations, deadlines, playbooks; read-only), and proposes redlines, citation formatting, time entries and filing bundles only after you approve each change. Filing and sending are never performed unattended."
+kind: standalone
+manifest_version: 2
+api_version: 1
+provides_tools:
+  - legal_matter_list
+  - legal_matter_get
+  - legal_doc_search
+  - legal_doc_read
+  - legal_doc_compare
+  - legal_cite_extract
+  - legal_cite_check
+  - legal_cite_format
+  - legal_playbook_review
+  - legal_doc_redline
+  - legal_chronology
+  - legal_deadline_extract
+  - legal_deadline_calc
+  - legal_transcribe
+  - legal_intake_summary
+  - legal_time_log
+  - legal_sync
+  - legal_efile_bundle
+provides_hooks:
+  - pre_tool_call
+config_schema:
+  HERMES_LEGAL_DATA_DIR:
+    type: str
+    default: ""
+    description: "The hermes-legal data directory (the one holding legal.db). Empty: the app's own choice, so the plugin and the app always read the same database."
+  HERMES_LEGAL_APP_DIR:
+    type: str
+    default: ""
+    description: "Prerequisite for a standalone plugin install: a trusted hermes-legal checkout prepared with uv sync on Python 3.12. Run uv run legal doctor there to configure optional integrations."
+  COURTLISTENER_TOKEN:
+    type: secret
+    env: COURTLISTENER_TOKEN
+    label: "CourtListener API token"
+    description: "Optional, free. Only legal_cite_check, legal_cite_extract lookups and legal_sync use it; installing and every local read need no key."
+tags: [legal, documents, privacy, local-first]

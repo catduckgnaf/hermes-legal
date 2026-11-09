@@ -1,0 +1,45 @@
+name: Integration request
+description: Propose a connection to a legal service, document store or data source.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every connector needs a public or partner API, bring-your-own credentials, read-only-by-default behavior, and a stated data flow: what leaves the device, and to whom.
+  - type: textarea
+    id: service
+    attributes:
+      label: Service
+      description: Name the service and link its developer API documentation.
+    validations:
+      required: true
+  - type: textarea
+    id: api
+    attributes:
+      label: API access
+      description: Is the API public, partner-gated, or customer-gated? What authentication does it use?
+    validations:
+      required: true
+  - type: textarea
+    id: dataflow
+    attributes:
+      label: Data flow
+      description: What would be read, what would be written, and what would leave the user's computer?
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know the connector works, including its legal doctor check?
+    validations:
+      required: true
+  - type: checkboxes
+    id: attestations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched open and closed issues for this problem.
+          required: true
+        - label: I removed credentials, tokens, real client material and personal data from this report.
+          required: true
