@@ -109,9 +109,21 @@ def main(argv=None):
         print(f"Would bind 127.0.0.1:{args.port} only (local access mode).")
         return 0
     if args.cmd == "cite-check":
-        from .citations import extract_all
-        found = extract_all(args.text)
-        print(json.dumps({"citations": found, "status": "resolver lookup is a v1 build item; nothing was asserted by a model"}, indent=2)); return 0
+        from .citations import HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
+        found = extract_citations(args.text)
+        gate = verify_all_gate(args.text)
+        print(json.dumps({
+            "citations": [
+                {"raw": c.raw, "normalized": c.normalized, "formatted": format_citation(c),
+                 "status": "unverified"}
+                for c in found
+            ],
+            "status": "unverified",
+            "note": "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model.",
+            "history": "history_unknown",
+            "history_note": HISTORY_DISCLAIMER,
+            "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},
+        }, indent=2)); return 0
     ap.print_help(); return 0
 
 if __name__ == "__main__":
