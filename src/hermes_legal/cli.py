@@ -81,6 +81,7 @@ def main(argv=None):
                     {"name": p.name, "tier": p.tier, "trains_on_data": p.trains_on_data,
                      "retention": p.retention, "terms_checked": p.terms_checked,
                      "notes": p.notes,
+                     "endpoint": providers.provider_endpoint(p),
                      "allowed_at_ceiling": (providers.allowed(p, args.ceiling) if args.ceiling else None)}
                     for p in catalog
                 ],
@@ -102,6 +103,9 @@ def main(argv=None):
                 print(f"  {providers.tier_badge(p)}")
                 print(f"      retention: {p.retention} | terms checked: {p.terms_checked}"
                       f" | trains on data: {'yes' if p.trains_on_data else 'no'}")
+                endpoint = providers.provider_endpoint(p)
+                if endpoint:
+                    print(f"      endpoint: {endpoint}")
                 if p.notes:
                     print(f"      {p.notes}")
         print("\nLocal models:")
