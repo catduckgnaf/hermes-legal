@@ -211,6 +211,17 @@ def verify_redaction(document: DocumentText, phrases: list[str]) -> RedactionVer
     )
 
 
+def is_pdf_bytes(data: bytes) -> bool:
+    """True when the bytes carry a PDF header.
+
+    The PDF specification allows the ``%PDF-`` header to appear within the
+    first 1024 bytes, so a short leading offset is tolerated. Anything else
+    is not a PDF, and a check run against it must never be reported as a
+    PDF check.
+    """
+    return b"%PDF-" in data[:1024]
+
+
 # --------------------------------------------------------------------------
 # Optional real-PDF text extraction (pypdf, the `pdf` extra)
 # --------------------------------------------------------------------------

@@ -9,7 +9,7 @@ of the folder the user opened: the database holds metadata only.
 import pathlib
 import urllib.parse
 
-from .providers import TIERS
+from .providers import TIER_ORDER, TIERS
 
 # Privacy ceilings a matter may carry. BLOCKED is a provider tier, never a
 # valid ceiling for a matter, so it is excluded here.
@@ -201,6 +201,88 @@ def open_as_matter(conn, target, name=None, privacy_ceiling=None):
 
 # Short alias: opening is the verb every caller reaches for.
 open_matter = open_as_matter
+
+
+_CEILING_RAISES_SCHEMA = """
+CREATE TABLE IF NOT EXISTS ceiling_raises (
+  id INTEGER PRIMARY KEY,
+  matter_id INTEGER NOT NULL REFERENCES matters(id),
+  previous_ceiling TEXT NOT NULL,
+  new_ceiling TEXT NOT NULL,
+  raised_by TEXT NOT NULL,
+  consent_note TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+"""
+
+
+def ensure_ceiling_raises_table(conn):
+    """Create the ceiling-raise table if this database predates it."""
+    conn.executescript(_CEILING_RAISES_SCHEMA)
+    conn.commit()
+
+
+def raise_matter_ceiling(conn, matter_id, new_ceiling, *, raised_by, consent_note):
+    """Raise a matter's privacy ceiling and record the raise; return its id.
+
+    A ceiling raise is the moment privileged material becomes eligible to
+    leave the device, so it is never silent: the record names who raised
+    the ceiling and the client consent behind it, and both are required.
+    Only a genuine raise is recorded — lowering, re-setting the same
+    ceiling, an unknown ceiling and an unknown matter all raise
+    ValueError and change nothing.
+    """
+    if new_ceiling not in MATTER_PRIVACY_CEILINGS:
+        raise ValueError(
+            f"unknown privacy ceiling: {new_ceiling!r} "
+            f"(choose one of {', '.join(MATTER_PRIVACY_CEILINGS)})"
+        )
+    raised_by = str(raised_by or "").strip()
+    consent_note = str(consent_note or "").strip()
+    if not raised_by:
+        raise ValueError("raised_by must name who raised the ceiling")
+    if not consent_note:
+        raise ValueError("consent_note must record the client consent behind the raise")
+    row = conn.execute(
+        "SELECT privacy_ceiling FROM matters WHERE id=?", (matter_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"no such matter: {matter_id}")
+    previous_ceiling = row[0]
+    if TIER_ORDER[new_ceiling] <= TIER_ORDER[previous_ceiling]:
+        raise ValueError(
+            f"{new_ceiling} is not a raise from {previous_ceiling}; "
+            "only raising a matter ceiling is recorded here"
+        )
+    ensure_ceiling_raises_table(conn)
+    cur = conn.execute(
+        "INSERT INTO ceiling_raises "
+        "(matter_id, previous_ceiling, new_ceiling, raised_by, consent_note) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (matter_id, previous_ceiling, new_ceiling, raised_by, consent_note),
+    )
+    conn.execute(
+        "UPDATE matters SET privacy_ceiling=? WHERE id=?",
+        (new_ceiling, matter_id),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_ceiling_raises(conn, matter_id):
+    """Ceiling-raise records for one matter, oldest first, as plain dicts."""
+    ensure_ceiling_raises_table(conn)
+    rows = conn.execute(
+        "SELECT id, matter_id, previous_ceiling, new_ceiling, raised_by, "
+        "consent_note, created_at FROM ceiling_raises "
+        "WHERE matter_id=? ORDER BY id",
+        (matter_id,),
+    ).fetchall()
+    keys = (
+        "id", "matter_id", "previous_ceiling", "new_ceiling",
+        "raised_by", "consent_note", "created_at",
+    )
+    return [dict(zip(keys, row)) for row in rows]
 
 
 def list_matters(conn):

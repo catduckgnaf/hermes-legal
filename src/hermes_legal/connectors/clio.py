@@ -39,11 +39,31 @@ class ClioConnector(BaseConnector):
 
     # -- reads --------------------------------------------------------------
     def _list(self, path: str, matter_id=None, **params):
+        """Return every page of a list endpoint, not only the first.
+
+        Clio API v4 returns paging metadata in the response body: when
+        more results exist, ``meta.paging.next`` holds the full URL of
+        the next page, and it is omitted on the last page. Follow it
+        until it is absent. A ``next`` URL that repeats one already
+        visited is a paging cycle and raises instead of looping.
+        """
         self.require_enabled(matter_id)
-        data = self._get_json(f"{self.base_url}/{path}", params=params or None)
-        if isinstance(data, dict):
-            return data.get("data", [])
-        return data or []
+        url = f"{self.base_url}/{path}"
+        items: list = []
+        visited = {url}
+        data = self._get_json(url, params=params or None)
+        while True:
+            if not isinstance(data, dict):
+                return data or items
+            items.extend(data.get("data", []))
+            paging = (data.get("meta") or {}).get("paging") or {}
+            next_url = paging.get("next") if isinstance(paging, dict) else None
+            if not next_url:
+                return items
+            if next_url in visited:
+                raise RuntimeError(f"clio: paging cycle at {next_url}")
+            visited.add(next_url)
+            data = self._get_json(next_url)
 
     def list_matters(self, matter_id=None, **params):
         return self._list("matters.json", matter_id=matter_id, **params)

@@ -48,6 +48,31 @@ The ceiling is enforced by the provider router in
   valid matter ceiling.
 - Every catalog entry carries a `terms_checked` date; an entry with a
   missing or malformed date cannot be constructed.
+- A LOCAL_ONLY provider is verified local, not just labeled local. Each
+  local catalog entry carries the endpoint its runtime listens on
+  (Ollama at `http://127.0.0.1:11434`, LM Studio at
+  `http://127.0.0.1:1234/v1`). Before a local provider is routed, its
+  endpoint host must resolve to loopback — `localhost`, 127.0.0.0/8 or
+  ::1. A name that resolves to any non-loopback address, or does not
+  resolve at all, is refused. Ollama's own `OLLAMA_HOST` environment
+  variable may override the Ollama endpoint, and an explicit endpoint
+  may be passed to the router, but both are honored only after the same
+  loopback check, so pointing a "local" runtime at another machine
+  fails closed instead of quietly sending matter data there.
+- A cloud-routed model tag is refused for a LOCAL_ONLY provider: a
+  model such as `llama3.1:cloud` or `gpt-oss:120b-cloud` runs in
+  Ollama's cloud even though the endpoint is local, so routing,
+  preview and AI-log calls carrying one raise `PrivacyViolationError`.
+
+## Raising a matter ceiling
+
+`matters.raise_matter_ceiling` is the only recorded way to raise a
+matter's ceiling, and it requires both who raised it and the client
+consent behind the raise. The raise updates the matter and appends a
+row to the `ceiling_raises` table (matter, previous and new ceiling,
+who raised it, the consent note, and the time); `list_ceiling_raises`
+reads the records back. Lowering or re-setting a ceiling through this
+function is refused — it records raises only.
 
 Run `legal models` to see the full catalog grouped by tier with each
 provider's retention and terms-checked date, `legal models --ceiling

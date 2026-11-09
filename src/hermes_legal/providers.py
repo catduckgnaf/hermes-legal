@@ -15,12 +15,20 @@ Enforcement lives here, in code, not in a settings page:
   passed, so a refused send never produces a preview that looks approved.
 - ``log_ai_use()`` writes the per-matter AI log, and only for a call the
   router allowed.
+- A LOCAL_ONLY provider is verified local, not just labeled local: its
+  endpoint (catalog default, its endpoint environment variable such as
+  ``OLLAMA_HOST``, or an explicit endpoint) must resolve to loopback,
+  and a cloud-routed model tag such as ``:cloud`` is refused.
 """
 import csv
 import io
+import ipaddress
 import json
+import os
+import socket
 from dataclasses import dataclass, field
 from datetime import date
+from urllib.parse import urlparse
 
 TIERS = ("LOCAL_ONLY", "ZERO_RETENTION", "STANDARD", "BLOCKED")
 
@@ -56,6 +64,13 @@ class Provider:
     terms_checked: str   # ISO date the privacy terms were last verified
     notes: str = ""
     requires_zero_retention_allowlist: bool = False
+    # Where a LOCAL_ONLY runtime actually listens. Empty for cloud
+    # providers, whose endpoint is the provider itself. ``endpoint_env``
+    # names an environment variable that may override the endpoint (for
+    # Ollama that is the runtime's own ``OLLAMA_HOST``); an override is
+    # honored only after the loopback check in ``is_local_endpoint``.
+    endpoint: str = ""
+    endpoint_env: str = ""
 
     def __post_init__(self):
         if self.tier not in TIERS:
@@ -81,8 +96,8 @@ class Provider:
 
 
 PROVIDERS = [
-    Provider("Local (llama.cpp / Ollama)", "LOCAL_ONLY", False, "none — nothing leaves the device", "2026-11-09", "Default. Embeddings, OCR and transcription local too."),
-    Provider("Local (LM Studio)", "LOCAL_ONLY", False, "none — nothing leaves the device", "2026-11-09", "Closed-source runtime, free for work use; weights keep their own licenses."),
+    Provider("Local (llama.cpp / Ollama)", "LOCAL_ONLY", False, "none — nothing leaves the device", "2026-11-09", "Default. Embeddings, OCR and transcription local too.", endpoint="http://127.0.0.1:11434", endpoint_env="OLLAMA_HOST"),
+    Provider("Local (LM Studio)", "LOCAL_ONLY", False, "none — nothing leaves the device", "2026-11-09", "Closed-source runtime, free for work use; weights keep their own licenses.", endpoint="http://127.0.0.1:1234/v1"),
     Provider("Anthropic API with a zero-retention agreement", "ZERO_RETENTION", False, "none under the agreement; safety-classifier results may be retained", "2026-11-09"),
     Provider("OpenAI API with zero data retention", "ZERO_RETENTION", False, "none for eligible endpoints, by prior approval", "2026-11-09"),
     Provider("Azure OpenAI", "ZERO_RETENTION", False, "in-tenant; abuse monitoring limited for approved customers", "2026-11-09"),
@@ -107,6 +122,117 @@ LOCAL_MODELS = [
 
 
 # ---------------------------------------------------------------------------
+# Locality: a LOCAL_ONLY label is verified, not trusted (issue #24)
+# ---------------------------------------------------------------------------
+
+def _default_resolver(host):
+    """IP strings a host name resolves to, via the system resolver."""
+    return sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
+
+
+def provider_endpoint(provider: Provider, *, endpoint=None, environ=None) -> str:
+    """The endpoint a provider would actually be reached at.
+
+    An explicit ``endpoint`` wins, then the provider's endpoint
+    environment variable (for example ``OLLAMA_HOST``), then the catalog
+    default. Returns an empty string when no endpoint is known.
+    """
+    if endpoint is not None:
+        return str(endpoint).strip()
+    env = os.environ if environ is None else environ
+    if provider.endpoint_env:
+        value = str(env.get(provider.endpoint_env) or "").strip()
+        if value:
+            return value
+    return str(provider.endpoint or "").strip()
+
+
+def endpoint_host(endpoint) -> str:
+    """The host part of an endpoint, or an empty string when unparsable.
+
+    Scheme-less values such as ``127.0.0.1:11434`` (the usual
+    ``OLLAMA_HOST`` shape) are parsed as host and port.
+    """
+    raw = str(endpoint or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    return str(parsed.hostname or "").strip().rstrip(".").casefold()
+
+
+def is_local_endpoint(endpoint, *, resolver=None) -> bool:
+    """True only when an endpoint's host is verified loopback.
+
+    ``localhost`` names and literal loopback addresses (127.0.0.0/8 and
+    ::1) need no lookup. Any other name is resolved, and every resolved
+    address must be loopback: a name that resolves to a mix, resolves
+    only off the device, or does not resolve at all is not local.
+    """
+    host = endpoint_host(endpoint)
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+    resolve = resolver or _default_resolver
+    try:
+        addresses = list(resolve(host))
+    except Exception:
+        return False
+    if not addresses:
+        return False
+    for address in addresses:
+        try:
+            if not ipaddress.ip_address(str(address)).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def is_cloud_routed_model(model) -> bool:
+    """True for a model tag a local runtime routes to the cloud.
+
+    Ollama marks cloud-routed models with a ``:cloud`` or ``-cloud``
+    suffix (for example ``llama3.1:cloud`` or ``gpt-oss:120b-cloud``);
+    running one through a local endpoint still sends data off the
+    device, so the LOCAL_ONLY tier refuses it.
+    """
+    name = str(model or "").strip().casefold()
+    return bool(name) and (
+        name.endswith(":cloud") or name.endswith("-cloud") or ":cloud-" in name
+    )
+
+
+def _locality_reason(provider, *, model="", endpoint=None, environ=None, resolver=None):
+    """Human reason a LOCAL_ONLY provider fails locality, or None."""
+    if is_cloud_routed_model(model):
+        return (
+            f"model {model!r} is a cloud-routed model tag; a LOCAL_ONLY "
+            "provider must run a model that stays on this device"
+        )
+    resolved_endpoint = provider_endpoint(
+        provider, endpoint=endpoint, environ=environ
+    )
+    if not resolved_endpoint:
+        return (
+            f"{provider.name} is LOCAL_ONLY but has no endpoint on record, "
+            "so there is no local endpoint to verify; refused"
+        )
+    if not is_local_endpoint(resolved_endpoint, resolver=resolver):
+        return (
+            f"{provider.name} is LOCAL_ONLY but its endpoint "
+            f"{resolved_endpoint!r} does not resolve to a loopback address "
+            "(localhost, 127.0.0.0/8 or ::1); a LOCAL_ONLY provider whose "
+            "endpoint is remote or unresolvable as local is refused"
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Ceiling validation and the boolean check
 # ---------------------------------------------------------------------------
 
@@ -128,7 +254,8 @@ def validate_ceiling(matter_ceiling):
     return ceiling
 
 
-def _violation_reason(provider, matter_ceiling, *, zero_retention_allowlist=False):
+def _violation_reason(provider, matter_ceiling, *, zero_retention_allowlist=False,
+                      model="", endpoint=None, environ=None, resolver=None):
     """Human reason a provider is refused, or None when it is allowed."""
     ceiling = validate_ceiling(matter_ceiling)
     if provider.tier == "BLOCKED" or provider.trains_on_data:
@@ -147,23 +274,33 @@ def _violation_reason(provider, matter_ceiling, *, zero_retention_allowlist=Fals
             "allowlist mode; enable that mode explicitly so routing stays "
             "pinned to the allowlist"
         )
+    if provider.tier == "LOCAL_ONLY":
+        return _locality_reason(
+            provider, model=model, endpoint=endpoint,
+            environ=environ, resolver=resolver,
+        )
     return None
 
 
-def allowed(provider: Provider, matter_ceiling: str, *, zero_retention_allowlist: bool = False) -> bool:
+def allowed(provider: Provider, matter_ceiling: str, *, zero_retention_allowlist: bool = False,
+            model="", endpoint=None, environ=None, resolver=None) -> bool:
     """May this provider be used for a matter with this ceiling tier?
 
     Returns False for the BLOCKED tier and for any provider above the
-    ceiling. Raises ValueError for an unknown ceiling or tier so a typo
-    fails closed instead of silently comparing as allowed.
+    ceiling. A LOCAL_ONLY provider also returns False when its endpoint
+    is not verified loopback or the model is cloud-routed. Raises
+    ValueError for an unknown ceiling or tier so a typo fails closed
+    instead of silently comparing as allowed.
     """
     return _violation_reason(
         provider, matter_ceiling,
         zero_retention_allowlist=zero_retention_allowlist,
+        model=model, endpoint=endpoint, environ=environ, resolver=resolver,
     ) is None
 
 
-def require_allowed(provider: Provider, matter_ceiling: str, *, zero_retention_allowlist: bool = False) -> Provider:
+def require_allowed(provider: Provider, matter_ceiling: str, *, zero_retention_allowlist: bool = False,
+                    model="", endpoint=None, environ=None, resolver=None) -> Provider:
     """Return the provider, or raise PrivacyViolationError.
 
     This is the enforcement entry point. Unlike ``allowed()``, there is no
@@ -173,6 +310,7 @@ def require_allowed(provider: Provider, matter_ceiling: str, *, zero_retention_a
     reason = _violation_reason(
         provider, matter_ceiling,
         zero_retention_allowlist=zero_retention_allowlist,
+        model=model, endpoint=endpoint, environ=environ, resolver=resolver,
     )
     if reason is None:
         return provider
@@ -230,16 +368,26 @@ def _require_cataloged(provider: Provider) -> Provider:
     return provider
 
 
-def allowed_providers(matter_ceiling: str, *, zero_retention_allowlist: bool = False):
-    """Every catalog provider the ceiling allows, catalog order preserved."""
+def allowed_providers(matter_ceiling: str, *, zero_retention_allowlist: bool = False,
+                      model="", environ=None, resolver=None):
+    """Every catalog provider the ceiling allows, catalog order preserved.
+
+    Each LOCAL_ONLY provider is checked against its own catalog or
+    environment endpoint, because providers do not share endpoints; an
+    explicit per-provider endpoint is checked through allowed(),
+    require_allowed() or route() for that one provider.
+    """
     ceiling = validate_ceiling(matter_ceiling)
     return [
         p for p in PROVIDERS
-        if allowed(p, ceiling, zero_retention_allowlist=zero_retention_allowlist)
+        if allowed(p, ceiling, zero_retention_allowlist=zero_retention_allowlist,
+                   model=model if p.tier == "LOCAL_ONLY" else "",
+                   environ=environ, resolver=resolver)
     ]
 
 
-def route(matter_ceiling: str, requested=None, *, zero_retention_allowlist: bool = False) -> Provider:
+def route(matter_ceiling: str, requested=None, *, zero_retention_allowlist: bool = False,
+          model="", endpoint=None, environ=None, resolver=None) -> Provider:
     """Select a provider for a matter ceiling; raise on any violation.
 
     With no request, the first allowed catalog provider is selected, which
@@ -247,21 +395,29 @@ def route(matter_ceiling: str, requested=None, *, zero_retention_allowlist: bool
     request (a Provider or a catalog name), the request is enforced: a
     provider above the ceiling, a BLOCKED provider, a provider that trains
     on data, or an allowlist-only provider used outside allowlist mode all
-    raise instead of being returned.
+    raise instead of being returned. A LOCAL_ONLY provider also raises
+    when its endpoint (catalog default, its endpoint environment
+    variable, or the explicit ``endpoint``) is not verified loopback, or
+    when ``model`` is a cloud-routed tag.
     """
     ceiling = validate_ceiling(matter_ceiling)
     if requested is None:
         candidates = allowed_providers(
-            ceiling, zero_retention_allowlist=zero_retention_allowlist
+            ceiling, zero_retention_allowlist=zero_retention_allowlist,
+            model=model, environ=environ, resolver=resolver,
         )
-        if not candidates:  # pragma: no cover - a local provider always qualifies
+        if not candidates:
             raise PrivacyViolationError(f"no provider is allowed at ceiling {ceiling}")
         return candidates[0]
     provider = find_provider(requested)
+    # Catalog membership comes first: a tier asserted by an uncataloged
+    # object cannot be trusted, whatever locality it also claims.
+    _require_cataloged(provider)
     require_allowed(
-        provider, ceiling, zero_retention_allowlist=zero_retention_allowlist
+        provider, ceiling, zero_retention_allowlist=zero_retention_allowlist,
+        model=model, endpoint=endpoint, environ=environ, resolver=resolver,
     )
-    return _require_cataloged(provider)
+    return provider
 
 
 # Backwards-readable alias: routing *is* provider selection.
@@ -339,6 +495,7 @@ class PreSendPreview:
     model: str = ""
     files: tuple = ()
     chunks: tuple = field(default_factory=tuple)
+    endpoint: str = ""
 
     @property
     def badge(self):
@@ -371,6 +528,7 @@ class PreSendPreview:
             "badge": self.badge,
             "matter_ceiling": self.matter_ceiling,
             "model": self.model,
+            "endpoint": self.endpoint,
             "leaves_device": self.leaves_device,
             "retention": self.provider.retention,
             "terms_checked": self.provider.terms_checked,
@@ -383,6 +541,7 @@ class PreSendPreview:
     def render(self):
         destination = (
             "nothing leaves the device"
+            + (f" — verified local endpoint {self.endpoint}" if self.endpoint else "")
             if not self.leaves_device
             else f"sends to {self.provider.name} over TLS"
         )
@@ -402,15 +561,20 @@ class PreSendPreview:
     __str__ = render
 
 
-def build_preview(provider, matter_ceiling, files=(), chunks=(), *, model="", zero_retention_allowlist=False) -> PreSendPreview:
+def build_preview(provider, matter_ceiling, files=(), chunks=(), *, model="", zero_retention_allowlist=False,
+                  endpoint=None, environ=None, resolver=None) -> PreSendPreview:
     """Build the pre-send preview, raising on any ceiling violation.
 
     Enforcement runs first: a BLOCKED or over-ceiling provider raises
-    PrivacyViolationError and no preview is produced.
+    PrivacyViolationError and no preview is produced. For a LOCAL_ONLY
+    provider the endpoint is verified loopback and a cloud-routed model
+    tag raises too, so a preview can never describe a local send that
+    would actually leave the device.
     """
     ceiling = validate_ceiling(matter_ceiling)
     resolved = route(
-        ceiling, provider, zero_retention_allowlist=zero_retention_allowlist
+        ceiling, provider, zero_retention_allowlist=zero_retention_allowlist,
+        model=model, endpoint=endpoint, environ=environ, resolver=resolver,
     )
     return PreSendPreview(
         provider=resolved,
@@ -418,6 +582,8 @@ def build_preview(provider, matter_ceiling, files=(), chunks=(), *, model="", ze
         model=model,
         files=tuple(str(f) for f in files),
         chunks=tuple(_chunk_record(c, i) for i, c in enumerate(chunks)),
+        endpoint=(provider_endpoint(resolved, endpoint=endpoint, environ=environ)
+                  if resolved.tier == "LOCAL_ONLY" else ""),
     )
 
 
@@ -434,7 +600,8 @@ def _matter_ceiling(conn, matter_id):
     return validate_ceiling(row[0])
 
 
-def log_ai_use(conn, matter_id, provider, action, *, model="", matter_ceiling=None, zero_retention_allowlist=False):
+def log_ai_use(conn, matter_id, provider, action, *, model="", matter_ceiling=None, zero_retention_allowlist=False,
+               endpoint=None, environ=None, resolver=None):
     """Write one ai_log row for an allowed call; return the row id.
 
     The provider is enforced against the matter's stored ceiling (or the
@@ -449,10 +616,11 @@ def log_ai_use(conn, matter_id, provider, action, *, model="", matter_ceiling=No
         if matter_ceiling is not None
         else _matter_ceiling(conn, matter_id)
     )
-    require_allowed(
-        resolved, ceiling, zero_retention_allowlist=zero_retention_allowlist
-    )
     _require_cataloged(resolved)
+    require_allowed(
+        resolved, ceiling, zero_retention_allowlist=zero_retention_allowlist,
+        model=model, endpoint=endpoint, environ=environ, resolver=resolver,
+    )
     if not str(action or "").strip():
         raise ValueError("action must not be empty")
     cur = conn.execute(
@@ -464,15 +632,18 @@ def log_ai_use(conn, matter_id, provider, action, *, model="", matter_ceiling=No
     return cur.lastrowid
 
 
-def route_and_log(conn, matter_id, requested=None, *, action, model="", zero_retention_allowlist=False) -> Provider:
+def route_and_log(conn, matter_id, requested=None, *, action, model="", zero_retention_allowlist=False,
+                  endpoint=None, environ=None, resolver=None) -> Provider:
     """Route for a matter and log the selection in one enforced step."""
     ceiling = _matter_ceiling(conn, matter_id)
     provider = route(
-        ceiling, requested, zero_retention_allowlist=zero_retention_allowlist
+        ceiling, requested, zero_retention_allowlist=zero_retention_allowlist,
+        model=model, endpoint=endpoint, environ=environ, resolver=resolver,
     )
     log_ai_use(
         conn, matter_id, provider, action, model=model, matter_ceiling=ceiling,
         zero_retention_allowlist=zero_retention_allowlist,
+        endpoint=endpoint, environ=environ, resolver=resolver,
     )
     return provider
 

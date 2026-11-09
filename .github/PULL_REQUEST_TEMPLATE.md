@@ -113,6 +113,6 @@ Variables reason:
 - [ ] Tests added are named in the Tests added section, or the reason for adding none is specific and credible; added tests pin the changed behavior or regression, not only the happy path.
 - [ ] Regression scoping is credible: the full suite and neighboring regression areas were considered, and any exclusion or coverage gap is named with its reason.
 - [ ] Safety/authorization guards and contributor attribution are preserved.
-- [ ] Behavior changes were checked against every adapter/connection in their scope (the printer-scope rule: a change for one platform (Linux or Windows) or one connector is verified for every platform and connector in its scope, not only the one at hand).
+- [ ] Behavior changes were checked against every platform and connector in their scope (the platform-and-connector scope rule: a change for one platform (Linux or Windows) or one connector is verified for every platform and connector in its scope, not only the one at hand).
 - [ ] Registry/data changes keep their parity and drift tests green, or the exemption list is updated with a tracking reference.
 - [ ] Required current-head CI checks pass before merge; no deployment or live action is implied.
