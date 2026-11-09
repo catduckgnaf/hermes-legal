@@ -27,6 +27,17 @@ Statuses
 ``quote_not_verified``
     The authority was found, but a supplied quotation could not be confirmed
     in retrieved text. It blocks the gate.
+``ambiguous``
+    A resolver returned several candidate authorities for one citation, so
+    no single match can be asserted. A human has to pick; until then it
+    blocks the gate exactly like ``unverified``.
+``attested``
+    A citation class a resolver cannot cover (a statute, or a Westlaw,
+    Lexis, or public-domain citation) was checked by a named human, and
+    that check was recorded with who checked it, when, and from what
+    source (see :class:`CitationAttestation`). Attestation never applies
+    to an ordinary case citation, and never overrides a resolver's
+    ``not_found``.
 ``history_unknown``
     The subsequent-history dimension of every result. Hermes Legal has no
     Shepard's or KeyCite, so history is always reported as unknown and the
@@ -49,6 +60,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -58,14 +70,18 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 STATUSES = (
     "unverified", "exists", "quote_verified", "not_found", "history_unknown",
-    "name_mismatch", "quote_not_verified",
+    "name_mismatch", "quote_not_verified", "ambiguous", "attested",
 )
 
-#: Statuses that mean a resolver actually checked the citation and found it.
-CHECKED_STATUSES = ("exists", "quote_verified")
+#: Statuses that mean the citation was actually checked: a resolver found
+#: the authority, or a recorded human attestation covers it.
+CHECKED_STATUSES = ("exists", "quote_verified", "attested")
 
-#: Statuses that block the Verify-All gate.
-BLOCKING_STATUSES = ("unverified", "not_found", "name_mismatch", "quote_not_verified")
+#: Statuses that block the Verify-All gate. ``ambiguous`` blocks like
+#: ``unverified``: several candidate matches are not a match.
+BLOCKING_STATUSES = (
+    "unverified", "not_found", "name_mismatch", "quote_not_verified", "ambiguous",
+)
 
 #: Shown wherever a verification result is presented.
 HISTORY_DISCLAIMER = (
@@ -430,7 +446,8 @@ class VerificationResult:
 
     @property
     def checked(self) -> bool:
-        """True only when a resolver found the authority."""
+        """True only when a resolver found the authority, or a recorded
+        human attestation covers a citation class a resolver cannot."""
         return self.status in CHECKED_STATUSES
 
     @property
@@ -631,6 +648,14 @@ def parse_courtlistener_lookup(payload: Any, citation: Citation | str,
         raw_clusters = item.get("clusters")
         if isinstance(raw_clusters, list):
             clusters.extend(c for c in raw_clusters if isinstance(c, dict))
+    if len(clusters) > 1:
+        # Several candidate authorities are not a match on the first one.
+        # Name none of them: a human has to pick, and the gate fails closed.
+        return VerificationResult(
+            citation=key, status="ambiguous", source=CourtListenerClient.name,
+            detail=(f"CourtListener returned {len(clusters)} opinion clusters for "
+                    "this citation; a human must determine which one, if any, is "
+                    "the cited authority. It is not treated as a match."))
     if clusters:
         first = clusters[0]
         matched_name = first.get("case_name") or first.get("case_name_full")
@@ -658,6 +683,137 @@ def parse_courtlistener_lookup(payload: Any, citation: Citation | str,
     return VerificationResult(
         citation=key, status="unverified", source=CourtListenerClient.name,
         detail=error_message or "CourtListener returned no match data; the citation was not checked.")
+
+
+# ---------------------------------------------------------------------------
+# Recorded human attestation (for citation classes no resolver covers)
+# ---------------------------------------------------------------------------
+
+#: Citation classes a resolver cannot cover, so a recorded human
+#: attestation is the only check available: statutes (no statute resolver
+#: yet), and Westlaw, Lexis, and public-domain citations.
+ATTESTATION_CLASSES = ("statute", "westlaw", "lexis", "public_domain")
+
+
+def _parse_any(citation: Citation | str) -> Citation | None:
+    if isinstance(citation, Citation):
+        return citation
+    found = extract_citations(str(citation), include_unrecognized=True)
+    return found[0] if found else None
+
+
+def attestation_class(citation: Citation | str) -> str | None:
+    """The attestation class of *citation*, or ``None`` when attestation
+    is not accepted for it.
+
+    Only statutes and the unrecognized database and public-domain shapes
+    qualify. An ordinary case citation in a listed reporter returns
+    ``None``: it must be checked by a resolver, never by attestation.
+    """
+    cite = _parse_any(citation)
+    if cite is None:
+        return None
+    if cite.kind == "statute":
+        return "statute"
+    if cite.kind != "unrecognized":
+        return None
+    raw = cite.normalized
+    if re.search(r"\bWL\b", raw):
+        return "westlaw"
+    if "LEXIS" in raw.upper():
+        return "lexis"
+    if _UNRECOGNIZED_RES[1].search(raw):
+        return "public_domain"
+    return None
+
+
+@dataclass(frozen=True)
+class CitationAttestation:
+    """A recorded human check of a citation a resolver cannot cover:
+    who checked it, when, and from what source."""
+
+    citation: str
+    attested_by: str
+    source: str
+    attested_at: str = ""
+    matter_id: int | None = None
+
+    @property
+    def citation_class(self) -> str | None:
+        return attestation_class(self.citation)
+
+
+def record_attestation(conn, citation: Citation | str, *, attested_by: str,
+                       source: str, matter_id: int | None = None,
+                       attested_at: str | None = None) -> CitationAttestation:
+    """Persist an attestation in the ``citation_attestations`` table of a
+    database opened with :func:`hermes_legal.db.connect`.
+
+    Raises :class:`ValueError` when who or what source is missing, or when
+    the citation is not in a class attestation covers -- an ordinary case
+    citation can never be attested into the gate.
+    """
+    who = (attested_by or "").strip()
+    what_source = (source or "").strip()
+    if not who:
+        raise ValueError("an attestation must name who checked the citation")
+    if not what_source:
+        raise ValueError("an attestation must name the source the citation was checked in")
+    cite = _parse_any(citation)
+    if cite is None or attestation_class(cite) is None:
+        raise ValueError(
+            "attestation is only accepted for statutes and Westlaw, Lexis, or "
+            f"public-domain citations; {citation!r} must be checked by a resolver")
+    when = attested_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO citation_attestations"
+        " (matter_id, citation, citation_class, attested_by, attested_at, source)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (matter_id, cite.normalized, attestation_class(cite), who, when, what_source))
+    conn.commit()
+    return CitationAttestation(
+        citation=cite.normalized, attested_by=who, source=what_source,
+        attested_at=when, matter_id=matter_id)
+
+
+def load_attestations(conn, matter_id: int | None = None) -> dict[str, CitationAttestation]:
+    """Load persisted attestations as a mapping of normalized citation to
+    attestation, ready to pass to the Verify-All gate."""
+    if matter_id is None:
+        rows = conn.execute(
+            "SELECT citation, attested_by, attested_at, source, matter_id"
+            " FROM citation_attestations ORDER BY id").fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT citation, attested_by, attested_at, source, matter_id"
+            " FROM citation_attestations WHERE matter_id = ? ORDER BY id",
+            (matter_id,)).fetchall()
+    return {
+        row[0]: CitationAttestation(
+            citation=row[0], attested_by=row[1], source=row[3],
+            attested_at=row[2] or "", matter_id=row[4])
+        for row in rows
+    }
+
+
+def _apply_attestation(citation: Citation | str, result: VerificationResult,
+                       attestation: CitationAttestation | None) -> VerificationResult:
+    """Let a recorded attestation stand in for a resolver, narrowly.
+
+    Only an ``unverified`` result for a citation in an attestation class
+    can become ``attested``. A resolver's ``not_found`` is never upgraded,
+    for any citation, and neither is any other resolver verdict.
+    """
+    if attestation is None or result.status != "unverified":
+        return result
+    if attestation_class(citation) is None:
+        return result
+    return VerificationResult(
+        citation=result.citation, status="attested", source="human-attestation",
+        detail=(f"Attested by {attestation.attested_by} at "
+                f"{attestation.attested_at or 'an unrecorded time'} from "
+                f"{attestation.source}: a human checked this citation in a "
+                "source a resolver cannot cover."))
 
 
 # ---------------------------------------------------------------------------
@@ -712,10 +868,13 @@ def _resolve(citation: Citation | str, resolver: CitationResolver,
 
 
 def verify_citation(citation: Citation | str, resolver: CitationResolver,
-                    quote: str | None = None) -> VerificationResult:
+                    quote: str | None = None,
+                    attestation: CitationAttestation | None = None) -> VerificationResult:
     """Verify one citation through *resolver*. Without a resolver there is
-    no verification -- callers must pass one explicitly."""
-    return _resolve(citation, resolver, quote)
+    no verification -- callers must pass one explicitly. A recorded
+    *attestation* is applied under the narrow rules of
+    :func:`_apply_attestation`."""
+    return _apply_attestation(citation, _resolve(citation, resolver, quote), attestation)
 
 
 @dataclass(frozen=True)
@@ -743,20 +902,24 @@ class VerifyAllResult:
             return ("Verify-All: every citation was checked and found. "
                     + HISTORY_DISCLAIMER)
         names = ", ".join(self.blocked_citations)
-        return (f"Verify-All blocked: unverified or not found citation(s): {names}. "
+        return (f"Verify-All blocked: citation(s) not verified (unverified, not found, or ambiguous): {names}. "
                 "Export, print, and filing-bundle preparation are blocked until "
                 "each named citation is verified or removed. " + HISTORY_DISCLAIMER)
 
 
 def verify_all(text_or_citations: str | Iterable[Citation | str],
                resolver: CitationResolver | None = None,
-               quotes: Mapping[str, str] | None = None) -> VerifyAllResult:
+               quotes: Mapping[str, str] | None = None,
+               attestations: Mapping[str, CitationAttestation] | None = None) -> VerifyAllResult:
     """Verify every citation in a document text or an iterable of citations.
 
     With no resolver, every citation is ``unverified`` -- extraction alone
     never checks anything, so a resolver-less Verify-All always blocks a
     document that contains citations. ``quotes`` maps a normalized citation
-    string to a quotation to check for ``quote_verified``.
+    string to a quotation to check for ``quote_verified``. ``attestations``
+    maps a normalized citation string to a recorded human attestation (see
+    :class:`CitationAttestation`), accepted only for citation classes a
+    resolver cannot cover and never over a ``not_found``.
     """
     if isinstance(text_or_citations, str):
         citations: list[Citation | str] = list(
@@ -768,11 +931,12 @@ def verify_all(text_or_citations: str | Iterable[Citation | str],
         key = _display(cite)
         quote = (quotes or {}).get(key)
         if resolver is None:
-            results.append(VerificationResult(
+            result = VerificationResult(
                 citation=key, status="unverified", source="none",
-                detail="No resolver was supplied; the citation has not been checked."))
+                detail="No resolver was supplied; the citation has not been checked.")
         else:
-            results.append(_resolve(cite, resolver, quote))
+            result = _resolve(cite, resolver, quote)
+        results.append(_apply_attestation(cite, result, (attestations or {}).get(key)))
     warnings: list[str] = []
     if results:
         warnings.append(HISTORY_DISCLAIMER)
@@ -801,25 +965,31 @@ def verify_all_gate(
     text_or_results: str | Iterable[Citation | str] | Iterable[VerificationResult],
     resolver: CitationResolver | None = None,
     quotes: Mapping[str, str] | None = None,
+    attestations: Mapping[str, CitationAttestation] | None = None,
 ) -> GateResult:
     """The Verify-All gate: blocks on unverified or not found citations.
 
     Accepts document text, citations, or precomputed verification results.
     The gate blocks export, print, and filing-bundle preparation while any
-    citation is ``unverified`` or ``not_found``, and the verdict names each
-    blocking citation. ``exists`` and ``quote_verified`` pass.
-    ``history_unknown`` is reported as a warning and never blocks on its
-    own, because history is unknown for every citation in this build.
+    citation is ``unverified``, ``not_found``, or ``ambiguous``, and the
+    verdict names each blocking citation. ``exists`` and ``quote_verified``
+    pass, and so does ``attested`` for the citation classes a resolver
+    cannot cover. ``history_unknown`` is reported as a warning and never
+    blocks on its own, because history is unknown for every citation in
+    this build.
     """
     items = list(text_or_results) if not isinstance(text_or_results, str) else None
     if items is not None and items and all(isinstance(i, VerificationResult) for i in items):
+        results = tuple(
+            _apply_attestation(i.citation, i, (attestations or {}).get(i.citation))
+            for i in items)  # type: ignore[arg-type]
         combined = VerifyAllResult(
-            results=tuple(items),  # type: ignore[arg-type]
+            results=results,
             warnings=(HISTORY_DISCLAIMER,) if items else ())
     else:
         combined = verify_all(
             text_or_results,  # type: ignore[arg-type]
-            resolver=resolver, quotes=quotes)
+            resolver=resolver, quotes=quotes, attestations=attestations)
     return GateResult(
         allowed=combined.allowed,
         blocked_citations=combined.blocked_citations,
@@ -831,23 +1001,29 @@ def assert_verify_all(
     text_or_results: str | Iterable[Citation | str] | Iterable[VerificationResult],
     resolver: CitationResolver | None = None,
     quotes: Mapping[str, str] | None = None,
+    attestations: Mapping[str, CitationAttestation] | None = None,
 ) -> GateResult:
     """Return the gate verdict, or raise :class:`CitationGateError` naming
     every blocking citation when the gate blocks."""
-    gate = verify_all_gate(text_or_results, resolver=resolver, quotes=quotes)
+    gate = verify_all_gate(text_or_results, resolver=resolver, quotes=quotes,
+                           attestations=attestations)
     if not gate.allowed:
         raise CitationGateError(gate)
     return gate
 
 
 __all__ = [
-    "BLOCKING_STATUSES", "CHECKED_STATUSES", "CITE_RE", "COURTLISTENER_BASE_URL",
-    "COURTLISTENER_TOKEN_ENV", "Citation", "CitationGateError",
+    "ATTESTATION_CLASSES", "BLOCKING_STATUSES", "CHECKED_STATUSES", "CITE_RE",
+    "COURTLISTENER_BASE_URL",
+    "COURTLISTENER_TOKEN_ENV", "Citation", "CitationAttestation", "CitationGateError",
     "CitationResolver", "CourtListenerClient", "FORMATTER_LIMITS",
     "FixtureResolver", "GateResult", "HISTORY_DISCLAIMER", "OfflineResolver",
     "REPORTERS", "STATUSES", "VerificationResult", "VerifyAllResult",
-    "assert_verify_all", "case_names_match", "extract", "extract_all", "extract_citations",
-    "format_all", "format_bluebook", "format_citation", "normalize_reporter",
-    "parse_citation", "parse_courtlistener_lookup", "verify_all",
+    "assert_verify_all", "attestation_class", "case_names_match", "extract",
+    "extract_all", "extract_citations",
+    "format_all", "format_bluebook", "format_citation", "load_attestations",
+    "normalize_reporter",
+    "parse_citation", "parse_courtlistener_lookup", "record_attestation",
+    "verify_all",
     "verify_all_gate", "verify_citation",
 ]
