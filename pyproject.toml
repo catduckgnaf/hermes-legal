@@ -1,6 +1,6 @@
 [project]
 name = "hermes-legal"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first legal work desktop: matter workspaces, document editing, verified citations, and privacy-first AI that shares no data by default"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
