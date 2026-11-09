@@ -15,9 +15,9 @@ class Tool:
 
 TOOLS = [
     Tool("legal_matter_list", "Matters: name, folder, privacy ceiling, status."),
-    Tool("legal_matter_get", "One matter: metadata, documents, open deadlines, unverified citations."),
-    Tool("legal_doc_search", "Search a matter's documents (local full-text and vector index). Nothing leaves the device."),
-    Tool("legal_doc_read", "Read a document or page range from a matter, with page and span references."),
+    Tool("legal_matter_get", "One matter: metadata, documents listed live from the matter folder on disk, open deadlines, unverified citations."),
+    Tool("legal_doc_search", "Search a matter's documents, enumerated from the on-disk document listing (local full-text and vector index). Nothing leaves the device."),
+    Tool("legal_doc_read", "Read a document or page range from a matter's on-disk document listing, with page and span references."),
     Tool("legal_doc_compare", "Compare two document versions deterministically; returns the change list."),
     Tool("legal_cite_extract", "Extract citations from text or a document (eyecite-style parsing)."),
     Tool("legal_cite_check", "Verify citations against CourtListener / Caselaw Access Project / govinfo: exists, quote verified, history unknown."),
