@@ -15,15 +15,15 @@ class Tool:
 
 TOOLS = [
     Tool("legal_matter_list", "Matters: name, folder, privacy ceiling, status."),
-    Tool("legal_matter_get", "One matter: metadata, documents, open deadlines, unverified citations."),
-    Tool("legal_doc_search", "Search a matter's documents (local full-text and vector index). Nothing leaves the device."),
+    Tool("legal_matter_get", "One matter: metadata, documents listed live from the matter folder on disk, open deadlines, unverified citations."),
+    Tool("legal_doc_search", "Search a matter's documents, enumerated from the on-disk document listing (local full-text and vector index). Nothing leaves the device."),
     Tool("legal_doc_read", "Read a document or page range from a matter, with page and span references."),
-    Tool("legal_doc_compare", "Compare two document versions deterministically; returns the change list."),
+    Tool("legal_doc_compare", "Compare two DOCX versions deterministically (hermes_legal.docx_edit.compare_docx: paragraph-level diff, no model); returns the change list."),
     Tool("legal_cite_extract", "Extract citations from text or a document (eyecite-style parsing)."),
     Tool("legal_cite_check", "Verify citations against CourtListener / Caselaw Access Project / govinfo: exists, quote verified, history unknown."),
     Tool("legal_cite_format", "Format citations to Bluebook (current edition) deterministically.", write=True),
     Tool("legal_playbook_review", "Review a contract clause by clause against a playbook; returns findings, changes nothing."),
-    Tool("legal_doc_redline", "Propose a redline as real Word track changes (w:ins / w:del), attributed to the AI and unverified until a human accepts them.", write=True),
+    Tool("legal_doc_redline", "Propose a redline as real Word track changes (hermes_legal.docx_edit.build_redline: w:ins / w:del patched into document.xml), attributed to 'hermes-legal (AI - unverified)' and unverified until a human accepts them.", write=True),
     Tool("legal_chronology", "Build a dated chronology from a matter's documents, each entry cited to its source page."),
     Tool("legal_deadline_extract", "Extract dates and deadlines from orders and documents; returns candidates, computes nothing silently."),
     Tool("legal_deadline_calc", "Compute a deadline from a court rule data file, showing the rule and the arithmetic."),
@@ -33,6 +33,11 @@ TOOLS = [
     Tool("legal_sync", "Pull new material from a connected source (CourtListener, Clio, a document store). Changes nothing the user entered.", action=True),
     Tool("legal_efile_bundle", "Prepare (never file) an e-filing bundle: ordered, paginated, format-checked, ready for a human to file.", write=True),
 ]
+
+TOOL_IMPLEMENTATIONS = {
+    "legal_doc_compare": "hermes_legal.docx_edit.compare_docx",
+    "legal_doc_redline": "hermes_legal.docx_edit.build_redline",
+}
 
 TOOL_NAMES = [t.name for t in TOOLS]
 READ_TOOLS = [t.name for t in TOOLS if not t.write]

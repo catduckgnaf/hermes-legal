@@ -1,14 +1,19 @@
-site_name: hermes-legal
+site_name: Hermes Legal
 theme:
   name: material
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Deadlines: deadlines.md
   - Architecture: architecture.md
   - Security: security.md
+  - Playbooks: playbooks.md
   - AI modes: ai-modes.md
+  - Agent tools: agent-tools.md
   - Models: models.md
   - Integrations: integrations.md
+  - Citations: citations.md
   - Desktop: desktop.md
+  - Document editing: document-editing.md
   - Roadmap: roadmap.md
   - Research: research/foundation-report.md
