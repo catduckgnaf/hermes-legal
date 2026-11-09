@@ -9,6 +9,7 @@ nav:
   - Security: security.md
   - Playbooks: playbooks.md
   - AI modes: ai-modes.md
+  - Agent tools: agent-tools.md
   - Models: models.md
   - Integrations: integrations.md
   - Citations: citations.md
