@@ -13,7 +13,15 @@ Design rules, in code rather than only in prose:
   by hand from the output alone.
 - Every computed deadline carries VERIFY_WARNING. Local rules, court
   orders, and stipulations can change any period; this module never
-  presents a computed date as verified law.
+  presents a computed date as verified law. The warning travels on every
+  surface this module controls: the calculation and its dict form, a
+  candidate's dict form, the record stored for a confirmed deadline,
+  the .ics description, and the connected-calendar event payload.
+- Connected calendars receive a payload, not a live sync: this module
+  builds the event dict a calendar connector would send
+  (``deadline_to_calendar_event`` and friends), for confirmed deadlines
+  only. Sending it to an actual calendar service needs a connector and
+  an account, which live outside this module.
 """
 import dataclasses
 import datetime
@@ -92,25 +100,37 @@ def _last_weekday(year, month, weekday):
     return last - datetime.timedelta(days=(last.weekday() - weekday) % 7)
 
 
+HOLIDAY_TABLE_PATH = RULES_DIR / "federal-holidays.json"
+
+
+def load_federal_holiday_table():
+    """The federal holiday table as data: the versioned JSON file in the
+    rules data directory, with its source. This is calendar data — the
+    standard federal holiday list the counting rules reference — not a
+    legal interpretation.
+    """
+    return json.loads(HOLIDAY_TABLE_PATH.read_text(encoding="utf-8"))
+
+
 def federal_holidays(year):
     """United States federal holidays for ``year`` (5 U.S.C. section 6103),
-    as a dict of date -> name. Observed-day shifting for holidays that fall
+    as a dict of date -> name, built from ``federal-holidays.json`` in the
+    rules data directory. Observed-day shifting for holidays that fall
     on a weekend is not applied; VERIFY_WARNING covers that check.
     """
-    mon, thu = 0, 3
-    return {
-        datetime.date(year, 1, 1): "New Year's Day",
-        _nth_weekday(year, 1, mon, 3): "Birthday of Martin Luther King, Jr.",
-        _nth_weekday(year, 2, mon, 3): "Washington's Birthday",
-        _last_weekday(year, 5, mon): "Memorial Day",
-        datetime.date(year, 6, 19): "Juneteenth National Independence Day",
-        datetime.date(year, 7, 4): "Independence Day",
-        _nth_weekday(year, 9, mon, 1): "Labor Day",
-        _nth_weekday(year, 10, mon, 2): "Columbus Day",
-        datetime.date(year, 11, 11): "Veterans Day",
-        _nth_weekday(year, 11, thu, 4): "Thanksgiving Day",
-        datetime.date(year, 12, 25): "Christmas Day",
-    }
+    holidays = {}
+    for entry in load_federal_holiday_table().get("holidays", []):
+        if entry["kind"] == "fixed":
+            day = datetime.date(year, entry["month"], entry["day"])
+        elif entry["kind"] == "nth_weekday":
+            day = _nth_weekday(year, entry["month"], entry["weekday"],
+                               entry["n"])
+        elif entry["kind"] == "last_weekday":
+            day = _last_weekday(year, entry["month"], entry["weekday"])
+        else:
+            raise ValueError(f"unknown holiday kind: {entry['kind']}")
+        holidays[day] = entry["name"]
+    return holidays
 
 
 def _non_business_reason(day, holidays):
@@ -212,11 +232,21 @@ def calculate(rule_id, trigger_date, service_method="personal",
         f"Step 2: count {period} days from the day after the trigger day: "
         f"{trigger_date.isoformat()} + {period} days = {last.isoformat()} "
         f"({last.strftime('%A')}). That is day {period} of the period.")
+    before_roll = last
     last = _roll_forward(last, holidays, steps,
                          "Step 3 (last-day check under the counting rule)")
+    if last == before_roll:
+        steps.append(
+            f"Step 3 (last-day check under the counting rule): "
+            f"{last.isoformat()} ({last.strftime('%A')}) is not a Saturday, "
+            f"Sunday, or federal holiday, so no roll applies.")
     steps.append(f"Step 3 result: the period would otherwise expire on "
                  f"{last.isoformat()} ({last.strftime('%A')}).")
     extra_id = rule.get("additional_time_rule_id")
+    if not extra_id:
+        steps.append(
+            f"Step 4: this rule carries no additional-time rule in its "
+            f"data file, so no days are added for service by {method}.")
     if extra_id:
         extra = get_rule(extra_id, rules=rules)
         applies = method in extra.get("applies_to_service_methods", [])
@@ -227,8 +257,17 @@ def calculate(rule_id, trigger_date, service_method="personal",
                 f"Step 4: {extra['citation']} adds {added} days because "
                 f"service was by {method}: {last.isoformat()} + {added} "
                 f"days = {new_last.isoformat()} ({new_last.strftime('%A')}).")
+            before_roll = new_last
             last = _roll_forward(new_last, holidays, steps,
                                  "Step 5 (last-day check after the added days)")
+            if last == before_roll:
+                steps.append(
+                    f"Step 5 (last-day check after the added days): "
+                    f"{last.isoformat()} ({last.strftime('%A')}) is not a "
+                    f"Saturday, Sunday, or federal holiday, so no roll "
+                    f"applies.")
+            steps.append(f"Step 5 result: the period expires on "
+                         f"{last.isoformat()} ({last.strftime('%A')}).")
         else:
             steps.append(
                 f"Step 4: {extra['citation']} does not apply here: service "
@@ -290,6 +329,9 @@ class Candidate:
         data = dataclasses.asdict(self)
         if self.due_date is not None:
             data["due_date"] = self.due_date.isoformat()
+        # A candidate that names a date or a period is a deadline surface
+        # too: the warning travels with it, before any confirmation.
+        data["warning"] = VERIFY_WARNING
         return data
 
 
@@ -406,27 +448,43 @@ def _insert(conn, matter_id, due_at, title, rule_source, kind, confirmed_by,
 
 
 def confirm_candidate(conn, matter_id, candidate, title, confirmed_by,
-                      second_confirmer=None, due_date=None):
+                      second_confirmer=None, due_date=None, is_filing=False):
     """Create a confirmed deadline from a candidate. The only path by
     which an extracted candidate becomes a deadline, and it requires a
     named human confirmer (two, for filing deadlines).
+
+    Dual entry applies when any of three signals says this is a filing
+    deadline: the candidate text, the caller's ``is_filing`` flag, or the
+    rule data behind the candidate's rule hint. Each signal can only
+    raise the requirement, never lower it — the same rule
+    ``confirm_calculation`` already follows.
     """
     due = due_date or candidate.due_date
     if due is None:
         raise ValueError("this candidate states a period, not a date; "
                          "calculate it first or supply the confirmed due date")
-    _check_confirmers(candidate.is_filing, confirmed_by, second_confirmer)
-    if isinstance(due, datetime.date):
-        due = due.isoformat()
     rule_source = ""
+    rule_is_filing = False
     if candidate.rule_id:
         try:
-            rule_source = rule_source_text(get_rule(candidate.rule_id))
+            rule = get_rule(candidate.rule_id)
+            rule_source = rule_source_text(rule)
+            rule_is_filing = bool(rule.get("is_filing"))
         except ValueError:
             rule_source = ""
+    _check_confirmers(candidate.is_filing or is_filing or rule_is_filing,
+                      confirmed_by, second_confirmer)
+    if isinstance(due, datetime.date):
+        due = due.isoformat()
+    # The stored record carries the warning, like a stored calculation
+    # does, so a candidate-confirmed deadline shows it too.
+    record = json.dumps({
+        "source": "candidate_confirmation", "kind": candidate.kind,
+        "due_at": due, "rule_id": candidate.rule_id or "",
+        "rule_source": rule_source, "warning": VERIFY_WARNING})
     return _insert(conn, matter_id, due, title, rule_source,
                    candidate.kind, confirmed_by, second_confirmer,
-                   candidate.excerpt, candidate.rule_id, "")
+                   candidate.excerpt, candidate.rule_id, record)
 
 
 def confirm_calculation(conn, matter_id, calculation, title, confirmed_by,
@@ -499,3 +557,71 @@ def deadlines_to_ics(deadlines, now=None):
 
 def export_ics(conn, matter_id, now=None):
     return deadlines_to_ics(list_deadlines(conn, matter_id), now=now)
+
+
+# ------------------------------------------- connected-calendar payload out
+
+def deadline_to_calendar_event(row):
+    """The event payload a connected-calendar connector would send for
+    one confirmed deadline row, as a plain dict: all-day event, summary,
+    an exclusive end date, and a description carrying the rule source,
+    the calculation steps when the row stores them, and VERIFY_WARNING.
+
+    This builds the payload only. Live calendar sync — sending it to a
+    calendar service — needs a connector and an account, which live
+    outside this module. An unconfirmed row raises instead of becoming
+    an event, so no caller can payload its way around confirmation.
+    """
+    if not row.get("verified"):
+        raise ValueError("unconfirmed deadlines never become calendar "
+                         "events; a named human must confirm first")
+    if row.get("status") not in (None, "", "confirmed"):
+        raise ValueError("unconfirmed deadlines never become calendar "
+                         "events; a named human must confirm first")
+    due = datetime.date.fromisoformat(str(row["due_at"])[:10])
+    description = [f"Rule source: {row.get('rule_source', '')}"]
+    stored = row.get("calculation_json") or ""
+    if stored:
+        try:
+            record = json.loads(stored)
+        except ValueError:
+            record = {}
+        if isinstance(record, dict) and record.get("steps"):
+            description.append("Calculation:")
+            description.extend(record["steps"])
+    description.append(VERIFY_WARNING)
+    return {
+        "uid": f"deadline-{row.get('id', due.isoformat())}@hermes-legal.local",
+        "deadline_id": row.get("id"),
+        "matter_id": row.get("matter_id"),
+        "summary": row.get("title", "Deadline"),
+        "description": "\n".join(description),
+        "start_date": due.isoformat(),
+        "end_date": (due + datetime.timedelta(days=1)).isoformat(),
+        "all_day": True,
+        "status": "confirmed",
+        "rule_id": row.get("rule_id", ""),
+        "rule_source": row.get("rule_source", ""),
+        "warning": VERIFY_WARNING,
+    }
+
+
+def deadlines_to_calendar_events(deadlines):
+    """Event payloads for confirmed deadlines only; unconfirmed rows are
+    skipped, exactly as in the .ics export.
+    """
+    events = []
+    for row in deadlines:
+        try:
+            events.append(deadline_to_calendar_event(row))
+        except ValueError:
+            continue
+    return events
+
+
+def export_calendar_events(conn, matter_id):
+    """Event payloads for a matter's confirmed deadlines, ready for a
+    calendar connector to send. Live sync itself remains with the
+    connector and the connected account.
+    """
+    return deadlines_to_calendar_events(list_deadlines(conn, matter_id))
