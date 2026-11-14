@@ -163,6 +163,11 @@ def apply_migrations(conn) -> None:
         conn.execute(
             "INSERT INTO schema_migrations (version, description) VALUES (?, ?)",
             (version, description))
+    # The base schema is all CREATE ... IF NOT EXISTS, so running it on
+    # every connect is free and means a table added to SCHEMA later still
+    # appears on a database that recorded migration 1 long ago. Column
+    # growth on existing tables still needs a numbered migration.
+    conn.executescript(SCHEMA)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
 

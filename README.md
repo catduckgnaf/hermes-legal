@@ -21,9 +21,9 @@ privileged. So Hermes Legal is designed around four rules:
    is **LOCAL-ONLY**: the model runs on your machine and *nothing leaves the
    device*.
 2. **Documents first.** Open a file or a folder and work on it: DOCX compare
-   and redlines with real Word track changes, a Bates label plan, redaction
-   checks on the extracted text layer, contract review against a playbook,
-   and a citation checker with a Verify-All gate.
+   and redlines with real Word track changes, Bates stamping of real PDFs,
+   redaction by rebuilding a PDF from its redacted text layer, contract
+   review against a playbook, and a citation checker with a Verify-All gate.
 3. **Writes ask first.** A write tool changes nothing on its own: it saves a
    pending action that a named person must approve at an interactive terminal
    before anything runs — and write proposals are refused outright in
@@ -47,12 +47,15 @@ plus the shared `legal_*` tool set described below, reached through the
 
 ## Desktop client: in development
 
-A lightweight desktop client is in development. It is being built from the
-ground up — it is not the earlier Tauri packaging scaffold in `desktop/` —
-and it connects to the Hermes agent/TUI backend the same way the Android
-client apps do. **Windows first, Linux later.** It does not ship or work
-today; until it lands, the CLI and the MCP server are the way to use
-Hermes Legal. The v1 core below targets Linux and Windows; macOS is not
+A lightweight desktop client is in development in `desktop/`: a Tauri 2
+shell with a plain HTML, CSS and JavaScript frontend that connects to a
+Hermes agent over its API server, the same way the Android client apps do
+(sessions, streaming chat, and approval prompts when the server supports
+them). **Windows first, Linux later.** CI builds unsigned Windows installers
+and tests the client against a mock server; it has not been verified
+against a live Hermes server and there is no signed release yet. Until
+there is, the CLI, the MCP server and `legal serve` are the supported ways
+to use Hermes Legal. The v1 core below targets Linux and Windows; macOS is not
 part of v1.
 
 ## Status: what works today
@@ -66,17 +69,17 @@ only a stub or packaging files exist.
 | Matter workspaces (`legal matter open/list/recent/documents`) | Working | A matter is an ordinary folder (or one file, whose folder becomes the matter). Documents are listed live from disk, never copied into a separate store. Opening takes a snapshot; a guarded write that would overwrite an external edit writes a conflict copy instead. |
 | `legal` CLI (`doctor`, `status`, `demo`, `matter`, `models`, `tools`, `tool`, `actions`, `ask`) | Working | Covered by the offline test suite. `legal doctor` runs offline and exits non-zero only when a required item is missing; optional integrations are reported but do not fail the run. `legal ask` answers from a matter using only a model server on this computer (loopback enforced) and needs one running. |
 | Document tools: `doc-compare`, `doc-redline` | Working | Deterministic, no model involved. Compare is paragraph-level. A redline is a new DOCX with real `w:ins` / `w:del` track changes by `hermes-legal (AI - unverified)`; it works on top-level body paragraphs — tables are preserved in place and their text is not redlined — and it never overwrites an existing file. |
-| PDF tools: `bates-plan`, `redact-verify` | Working | `bates-plan` plans the label for every page and stamps nothing. `redact-verify` checks that phrases are absent from a PDF's re-extracted text layer (reading a real PDF needs the optional `pdf` extra, `pypdf`); given a plain text file it says plainly that no PDF was checked. There is no PDF annotation or rendered stamping yet. |
+| PDF tools: `bates-plan`, `bates-stamp`, `redact`, `redact-verify` | Working | Real PDFs need the optional `pdf` extra (`pypdf`). `bates-plan` plans the label for every page and stamps nothing; `bates-stamp` writes a new PDF with the label on every page and never overwrites a file. `redact` rebuilds a brand-new PDF from the redacted text layer only (no metadata, annotations, attachments or save history carried over) and refuses to write it unless the phrases are absent on re-extraction. The rebuild keeps text only: layout, fonts and images are not preserved, and text inside images is never checked (no OCR). `redact-verify` checks a PDF's re-extracted text layer; given a plain text file it says plainly that no PDF was checked. |
 | Citations: extraction and formatting | Working | Extraction and Bluebook-style formatting run offline, with the project's own parser and no model. Extraction by itself verifies nothing, and every extracted citation is reported as unverified. |
-| Citation verification and the Verify-All gate | Working | A real CourtListener resolver client exists in `citations.py`. `legal cite-check` uses it when a CourtListener token is set in the environment; otherwise the command stays offline and reports every citation as unverified. Live checks need a token and network and are excluded from the offline suite. The Verify-All gate blocks while any citation is unverified, not found or ambiguous, and history is always reported as unknown. No Caselaw Access Project or govinfo resolver is built yet; they fit the same resolver interface. |
+| Citation verification and the Verify-All gate | Working | A real CourtListener resolver client exists in `citations.py`. `legal cite-check` uses it when a CourtListener token is set in the environment; otherwise the command stays offline and reports every citation as unverified. Live checks need a token and network and are excluded from the offline suite. The Verify-All gate blocks while any citation is unverified, not found or ambiguous, and history is always reported as unknown. U.S.C. statutes are checked against govinfo at the exact section cited; a section govinfo does not have stays unverified. On a LOCAL_ONLY matter (`--matter-id` or `--privacy-ceiling`) no lookup leaves the device, and `legal cite-attest` records a human check for a statute, Westlaw, Lexis or public-domain citation. No Caselaw Access Project resolver is built yet. |
 | Playbooks | Working | Markdown playbooks (NDA, MSA and employment samples in `playbooks/`, plus a fictional demo contract) are parsed at review time; review splits a contract into clauses and returns findings tied to clauses. Keyword checks only — a clean result is not assurance that a clause is acceptable. |
 | Deadlines | Working | Extraction returns candidates only and writes nothing. Calculation loads versioned Federal Rules of Civil Procedure rule data files and shows the rule and the arithmetic. Only a named human can confirm a candidate or calculation into a stored deadline (filing deadlines need two different confirmers), and only confirmed deadlines export to an `.ics` file. The starter rule files are a small set of examples, not a complete rule library. |
 | Spine: one shared tool set, dispatch and approvals | Working | Tools are defined once in `tooldefs.py` (18 `legal_*` definitions). Every surface goes through `dispatch.py`, which enforces the privacy ceiling, the approval flow and the unattended refusal in one place. 13 of the 18 tools have implementations today (see the next row). |
 | Agent tools (`legal_*`) | Working, in part | Implemented: `legal_matter_list`, `legal_matter_get`, `legal_doc_search`, `legal_doc_read`, `legal_doc_compare`, `legal_cite_extract`, `legal_cite_check`, `legal_cite_format`, `legal_playbook_review`, `legal_doc_redline`, `legal_deadline_extract`, `legal_deadline_calc`, `legal_time_log`. Defined but not built yet, and they say so (`not_implemented`) instead of returning a plausible empty result: `legal_chronology`, `legal_transcribe`, `legal_intake_summary`, `legal_sync`, `legal_efile_bundle`. Unbuilt tools are not advertised to agents. |
 | MCP server (`legal mcp serve`) | Working | A standard-library MCP server over stdio: initialize, ping, tool list and tool calls. Read tools are listed by default. Write tools are listed only after a person runs `legal mcp allow-writes on`, and even then a call only saves a pending action for approval. |
 | Connectors (Clio, DocuSign, CourtListener / RECAP, PACER) | Working, in part | A shared connector contract (doctor check, data-flow label, per-matter enable flag, credentials only through a credential store, read-only by default, writes as pending actions) plus these four connectors exist, with offline tests against fake transports. PACER pulls require a RECAP check first and a named human approval. The wider P0/P1/P2 list under Connections is the roadmap, not the shipped set. |
-| `legal serve` (local dashboard) | Scaffold | A stub: it prints a notice and binds nothing. There is no dashboard yet. |
-| Desktop app | In development | The new ground-up client described above is being built now and does not ship yet. The files in `desktop/` are an earlier Tauri 2 packaging scaffold (shell configuration, a placeholder page and packaging files); installers from it are not a release. |
+| `legal serve` (local dashboard) | Working | A standard-library web dashboard on 127.0.0.1 with a new random token every launch: matters, documents, deadlines, citation status, the pending-actions queue and a local-model Ask box, all through `dispatch.py`. Approving or rejecting needs a typed confirmation and a server started from an interactive terminal, the same rule as the CLI. A non-loopback bind needs `--allow-non-loopback` and prints a warning. |
+| Desktop app | In development | The client described above. Tested against a mock Hermes server and built unsigned for Windows in CI; not yet verified against a live Hermes server, and installers from CI are not a release. |
 
 ## Quickstart
 
@@ -162,8 +165,8 @@ and says so honestly. Full table: [docs/integrations.md](docs/integrations.md).
   shared tool set
 - [Agent tools](docs/agent-tools.md) — the `legal_*` tools, dispatch and
   approvals
-- [Document editing](docs/document-editing.md) — DOCX redlines, Bates plans
-  and redaction verification, with their limits
+- [Document editing](docs/document-editing.md) — DOCX redlines, Bates
+  stamping and PDF redaction, with their limits
 - [Citations](docs/citations.md) — verification, formatting and the
   Verify-All gate
 - [Deadlines](docs/deadlines.md) — candidates, human confirmation and rule
@@ -179,14 +182,14 @@ and says so honestly. Full table: [docs/integrations.md](docs/integrations.md).
 ```text
 src/hermes_legal/    the app: cli, db, matters, citations, deadlines,
                      playbooks, providers, tooldefs, dispatch, mcp_server,
-                     connectors
+                     serve (dashboard), connectors
 playbooks/           sample playbooks and the fictional demo contract
 demo_matter/         the synthetic demo matter (fictional client)
 docs/                MkDocs site: architecture, security, models, integrations
 tests/               offline suite; live checks are marked and excluded by default
 scripts/             check.py gates, contribution and spelling checkers
-desktop/             earlier Tauri 2 packaging scaffold — not the desktop
-                     client now in development (see above)
+desktop/             the desktop client in development (Tauri 2 shell,
+                     plain JavaScript frontend, mock-server tests)
 .github/             issue forms, PR template and workflows
 ```
 

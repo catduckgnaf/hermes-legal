@@ -232,8 +232,12 @@ def is_pdf_bytes(data: bytes) -> bool:
 # --------------------------------------------------------------------------
 
 def _pdf_literal(text: str) -> bytes:
-    """One PDF literal string body: WinAnsi bytes with the delimiters escaped."""
-    raw = text.encode("latin-1", "replace")
+    """One PDF literal string body: WinAnsi bytes with the delimiters escaped.
+
+    cp1252 is the encoding WinAnsiEncoding describes, so curly quotes,
+    dashes and the section sign survive; latin-1 would turn them into "?".
+    """
+    raw = text.encode("cp1252", "replace")
     return raw.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
 
 
@@ -308,8 +312,13 @@ def build_text_pdf(pages: list[str], *, page_sizes: list[tuple[float, float]] | 
     return _raw_pdf(contents, sizes, metadata)
 
 
-def _overlay_pdf(label: str, width: float, height: float, position: str) -> bytes:
-    """A one-page PDF holding only the Bates label at ``position``."""
+def _overlay_pdf(label: str, width: float, height: float, position: str,
+                 x0: float = 0.0, y0: float = 0.0) -> bytes:
+    """A one-page PDF holding only the Bates label at ``position``.
+
+    ``x0``/``y0`` are the target page's media box origin: a page whose box
+    does not start at 0,0 would otherwise get its label off the page.
+    """
     text_width = len(label) * 5.0  # close enough for 9pt Helvetica placement
     vertical, _, horizontal = position.partition("-")
     y = height - 24 if vertical == "top" else 24.0
@@ -319,9 +328,9 @@ def _overlay_pdf(label: str, width: float, height: float, position: str) -> byte
         x = max((width - text_width) / 2, 0.0)
     else:  # right, the default
         x = max(width - 36.0 - text_width, 0.0)
-    content = (f"BT /F1 9 Tf 1 0 0 1 {x:g} {y:g} Tm (".encode()
+    content = (f"BT /F1 9 Tf 1 0 0 1 {x + x0:g} {y + y0:g} Tm (".encode()
                + _pdf_literal(label) + b") Tj ET")
-    return _raw_pdf([content], [(width, height)])
+    return _raw_pdf([content], [(width + x0, height + y0)])
 
 
 def _require_pypdf():
@@ -358,7 +367,9 @@ def stamp_pdf(pdf_bytes: bytes, config: BatesConfig | None = None) -> bytes:
     writer = pypdf.PdfWriter(clone_from=io.BytesIO(pdf_bytes))
     for page, stamp in zip(writer.pages, stamps):
         width, height = float(page.mediabox.width), float(page.mediabox.height)
-        overlay = pypdf.PdfReader(io.BytesIO(_overlay_pdf(stamp.label, width, height, stamp.position)))
+        x0, y0 = float(page.mediabox.left), float(page.mediabox.bottom)
+        overlay = pypdf.PdfReader(io.BytesIO(
+            _overlay_pdf(stamp.label, width, height, stamp.position, x0, y0)))
         page.merge_page(overlay.pages[0])
     out = io.BytesIO()
     writer.write(out)
@@ -414,7 +425,7 @@ def redact_pdf(pdf_bytes: bytes, phrases: list[str]) -> RedactionResult:
     # either, in its original or case-folded form.
     if verification.passed:
         lowered = output.lower()
-        survivors = [p for p in phrases if p and p.encode("latin-1", "replace").lower() in lowered]
+        survivors = [p for p in phrases if p and p.encode("cp1252", "replace").lower() in lowered]
         if survivors:
             verification = RedactionVerification(
                 passed=False, remaining=verification.remaining,

@@ -91,7 +91,15 @@ section exists, and the result names the title's package id from the
 govinfo package API (`USCODE-<edition>-title<N>`). A resolved section is
 `exists` (or `quote_verified` / `quote_not_verified` when a quotation is
 supplied); the link service's 404 is `not_found`; any other failure is
-`unverified`, never a guess. An API key is read from `GOVINFO_API_KEY` or
+`unverified`, never a guess. The live link service answers a section it
+does not have with HTTP 400 rather than 404; because a 400 can also mean
+a malformed request, that stays `unverified` (blocking, and attestable)
+instead of a `not_found` no attestation could override. The section is
+looked up exactly as cited, letters and hyphens included (`2000e-2`,
+`78j`); only subsection parentheticals such as `(c)(3)` are dropped. When
+govinfo redirects to a page that is not that title and section, the
+result is `unverified`, and the package id reported is the edition govinfo
+actually resolved. An API key is read from `GOVINFO_API_KEY` or
 `HERMES_LEGAL_GOVINFO_API_KEY` when configured; the link service works
 without one. `legal cite-check` wires the two resolvers together through
 a router — cases to CourtListener, statutes to govinfo — whenever a

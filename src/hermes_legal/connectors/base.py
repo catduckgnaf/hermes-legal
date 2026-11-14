@@ -518,26 +518,56 @@ class DurablePendingActionStore:
         self.conn.commit()
         return record
 
-    def has_recorded_approval(self, action_id: str | None, approved_by: str) -> bool:
+    def _matching_approval(self, action_id: str | None, approved_by: str):
+        """The approval row ``approved_by`` names for ``action_id``, or None.
+
+        An approval covers exactly one action. A row recorded for action
+        A never approves action B, whether it is named by its approval id
+        or by its approver. A row recorded before the action id was known
+        (``action_id IS NULL``) is unbound: it can approve one action, and
+        :meth:`claim_approval` binds it to that action so it cannot be
+        reused for another.
+        """
         value = str(approved_by or "").strip()
-        if not value:
-            return False
+        if not value or not action_id:
+            return None
         row = self.conn.execute(
-            "SELECT 1 FROM connector_approvals WHERE approval_id = ?", (value,)).fetchone()
+            "SELECT approval_id, action_id FROM connector_approvals "
+            "WHERE approval_id = ? AND (action_id = ? OR action_id IS NULL)",
+            (value, action_id)).fetchone()
         if row:
-            return True
-        if action_id:
-            row = self.conn.execute(
-                "SELECT 1 FROM connector_approvals WHERE action_id = ? AND approver = ?",
-                (action_id, value)).fetchone()
-            if row:
-                return True
-            # An approval recorded before the action id was known still counts.
-            row = self.conn.execute(
-                "SELECT 1 FROM connector_approvals WHERE action_id IS NULL AND approver = ?",
-                (value,)).fetchone()
-            return row is not None
-        return False
+            return row
+        row = self.conn.execute(
+            "SELECT approval_id, action_id FROM connector_approvals "
+            "WHERE approver = ? AND action_id = ? ORDER BY created_at LIMIT 1",
+            (value, action_id)).fetchone()
+        if row:
+            return row
+        return self.conn.execute(
+            "SELECT approval_id, action_id FROM connector_approvals "
+            "WHERE approver = ? AND action_id IS NULL ORDER BY created_at LIMIT 1",
+            (value,)).fetchone()
+
+    def has_recorded_approval(self, action_id: str | None, approved_by: str) -> bool:
+        """True when a recorded approval covers this action (no side effect)."""
+        return self._matching_approval(action_id, approved_by) is not None
+
+    def claim_approval(self, action_id: str | None, approved_by: str) -> bool:
+        """Match an approval to this action and bind it if it was unbound.
+
+        Binding makes an unbound approval single-use: once it has
+        approved one action it is recorded against that action and can
+        never approve a different one.
+        """
+        row = self._matching_approval(action_id, approved_by)
+        if row is None:
+            return False
+        if row[1] is None:
+            self.conn.execute(
+                "UPDATE connector_approvals SET action_id = ? "
+                "WHERE approval_id = ? AND action_id IS NULL", (action_id, row[0]))
+            self.conn.commit()
+        return True
 
     def resolve_approver(self, action_id: str | None, approved_by: str) -> str:
         """Return the recorded approver name for an approval id or name."""
@@ -653,7 +683,7 @@ class PendingAction:
         if not approved_by or not str(approved_by).strip():
             raise ApprovalRequired("a pending action needs a named human approver")
         if self._store is not None:
-            if not self._store.has_recorded_approval(self.action_id, str(approved_by)):
+            if not self._store.claim_approval(self.action_id, str(approved_by)):
                 raise ApprovalRequired(
                     "approved_by does not match a recorded approval for this action; "
                     "record the human approval first (record_approval)")
