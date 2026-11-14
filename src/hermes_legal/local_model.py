@@ -74,10 +74,34 @@ class LocalModelClient:
         self.timeout = timeout
         self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirect())
 
-    def chat(self, model: str, system: str, user: str) -> str:
-        body = json.dumps({"model": require_local_model(model), "stream": False,
-                           "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
-        request = urllib.request.Request(f"{self.base_url}/chat/completions", data=body.encode("utf-8"),
+    @staticmethod
+    def build_body(model: str, system: str, user: str) -> bytes:
+        """The exact request body bytes for a chat call.
+
+        Built once, in one place, so the bytes that are hashed and
+        logged as the sent payload are the bytes handed to the server:
+        there is no second serialization that could diverge.
+        """
+        return json.dumps({"model": require_local_model(model), "stream": False,
+                           "messages": [{"role": "system", "content": system},
+                                        {"role": "user", "content": user}]}).encode("utf-8")
+
+    def chat_payload(self, body: bytes, *, expected_sha256: str | None = None) -> str:
+        """Send one prebuilt payload byte string, exactly as given.
+
+        When ``expected_sha256`` is supplied (the hash recorded against
+        the approved preview), a payload whose hash does not match it
+        is refused before anything is sent.
+        """
+        if not isinstance(body, (bytes, bytearray)):
+            raise LocalEndpointError("a chat payload must be the exact bytes to send")
+        raw = bytes(body)
+        if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise LocalEndpointError(
+                "the payload to send does not match the hash tied to the "
+                "approved preview; refusing to send a divergent payload"
+            )
+        request = urllib.request.Request(f"{self.base_url}/chat/completions", data=raw,
                                          headers={"Content-Type": "application/json"}, method="POST")
         with self._opener.open(request, timeout=self.timeout) as response:
             payload = json.loads(response.read().decode("utf-8"))
@@ -85,6 +109,9 @@ class LocalModelClient:
             return payload["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError):
             raise RuntimeError("the local model server returned an unexpected response") from None
+
+    def chat(self, model: str, system: str, user: str) -> str:
+        return self.chat_payload(self.build_body(model, system, user))
 
 
 def _select_chunks(conn, matter_id: int, question: str) -> list[dict]:
@@ -110,11 +137,28 @@ def ask_matter(conn, matter_id: int, question: str, *, model: str | None = None,
     context = "\n\n".join(f"[{c['path']}, {c['unit']} {c['index']}]\n{c['text']}" for c in chunks)
     user = f"Excerpts:\n{context or '(no matching excerpts)'}\n\nQuestion: {question}"
     digest = hashlib.sha256(f"{SYSTEM_PROMPT}\n{user}".encode("utf-8")).hexdigest()
+    # Build the exact payload bytes once. The hash logged against the
+    # approved preview is the hash of these bytes, and these same bytes
+    # are what is sent below, so sent == approved by construction; the
+    # chunk check in log_sent_payload fails closed if the payload's
+    # chunks ever diverge from the preview's.
+    build_body = getattr(client, "build_body", None) or LocalModelClient.build_body
+    payload = build_body(model, SYSTEM_PROMPT, user)
     # Logged before the call: a request that fails partway has still been made.
-    providers.log_ai_use(conn, matter_id, provider, f"ask chunks={len(chunks)} prompt_sha256={digest}",
-                         model=model, matter_ceiling=ceiling)
-    answer = client.chat(model, SYSTEM_PROMPT, user)
+    sent_record = providers.log_sent_payload(
+        conn, matter_id, preview, payload,
+        action=f"ask chunks={len(chunks)} prompt_sha256={digest}",
+        chunks=chunks,
+    )
+    if hasattr(client, "chat_payload"):
+        answer = client.chat_payload(payload, expected_sha256=sent_record["sent_sha256"])
+    else:
+        # A client that cannot take the exact prebuilt bytes falls back
+        # to the model/system/user call; conforming clients (including
+        # LocalModelClient) take the payload path above.
+        answer = client.chat(model, SYSTEM_PROMPT, user)
     return {"answer": answer, "notice": DRAFT_NOTICE, "badge": preview.badge, "preview": preview.to_dict(),
+            "sent_payload": sent_record,
             "sources": [{k: c[k] for k in ("path", "unit", "index")} for c in chunks],
             "unverified_citations": citations.extract_all(answer)}
 

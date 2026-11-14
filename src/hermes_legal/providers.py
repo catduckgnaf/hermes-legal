@@ -15,12 +15,17 @@ Enforcement lives here, in code, not in a settings page:
   passed, so a refused send never produces a preview that looks approved.
 - ``log_ai_use()`` writes the per-matter AI log, and only for a call the
   router allowed.
+- ``log_sent_payload()`` records what was actually sent: the hash and
+  size of the exact payload bytes and the per-chunk content hashes,
+  tied to the approved preview's fingerprint, refusing first when the
+  payload diverges from that preview.
 - A LOCAL_ONLY provider is verified local, not just labeled local: its
   endpoint (catalog default, its endpoint environment variable such as
   ``OLLAMA_HOST``, or an explicit endpoint) must resolve to loopback,
   and a cloud-routed model tag such as ``:cloud`` is refused.
 """
 import csv
+import hashlib
 import io
 import ipaddress
 import json
@@ -453,6 +458,33 @@ def stale_providers(today=None, *, stale_after_days: int = STALE_AFTER_DAYS, pro
     ]
 
 
+def validate_provider_catalog(entries=None):
+    """Return the catalog entries, or raise naming every bad entry.
+
+    Every entry must carry a valid terms-checked date and a known tier.
+    ``Provider`` construction already enforces this for catalog entries
+    built in code; this validator covers catalogs assembled elsewhere
+    (for example a doctor run over a supplied catalog), so a missing or
+    malformed date fails loudly instead of reading as checked.
+    """
+    catalog = list(PROVIDERS if entries is None else entries)
+    problems = []
+    for entry in catalog:
+        name = str(getattr(entry, "name", "") or "(unnamed provider)")
+        if getattr(entry, "tier", None) not in TIERS:
+            problems.append(f"{name}: unknown provider tier {getattr(entry, 'tier', None)!r}")
+        try:
+            _parse_date(getattr(entry, "terms_checked", ""))
+        except ValueError:
+            problems.append(
+                f"{name}: missing or malformed terms-checked date "
+                f"{getattr(entry, 'terms_checked', None)!r}"
+            )
+    if problems:
+        raise ValueError("invalid provider catalog: " + "; ".join(problems))
+    return catalog
+
+
 def tier_badge(provider) -> str:
     """The short badge shown on every Ask and send surface."""
     provider = find_provider(provider)
@@ -464,23 +496,32 @@ def tier_badge(provider) -> str:
 # ---------------------------------------------------------------------------
 
 def _chunk_record(chunk, index):
-    """Normalize one chunk (str, mapping, or (file, text) pair) for display."""
+    """Normalize one chunk (str, mapping, or (file, text) pair) for display.
+
+    Each record also carries the SHA-256 of the chunk's full text, so a
+    preview record identifies its chunks by content, not only by an
+    80-character excerpt, and a later payload can be checked against the
+    exact chunks that were approved.
+    """
     if isinstance(chunk, str):
-        return {"index": index, "file": "", "chars": len(chunk), "excerpt": chunk[:80]}
-    if isinstance(chunk, dict):
+        file_name, text, chars = "", chunk, len(chunk)
+    elif isinstance(chunk, dict):
         text = str(chunk.get("text", chunk.get("content", "")))
-        return {
-            "index": index,
-            "file": str(chunk.get("file", chunk.get("path", ""))),
-            "chars": int(chunk.get("chars", len(text))),
-            "excerpt": text[:80],
-        }
-    if isinstance(chunk, (tuple, list)) and len(chunk) == 2:
-        file_name, text = chunk
-        text = str(text)
-        return {"index": index, "file": str(file_name), "chars": len(text), "excerpt": text[:80]}
-    text = str(chunk)
-    return {"index": index, "file": "", "chars": len(text), "excerpt": text[:80]}
+        file_name = str(chunk.get("file", chunk.get("path", "")))
+        chars = int(chunk.get("chars", len(text)))
+    elif isinstance(chunk, (tuple, list)) and len(chunk) == 2:
+        file_name, text = str(chunk[0]), str(chunk[1])
+        chars = len(text)
+    else:
+        file_name, text = "", str(chunk)
+        chars = len(text)
+    return {
+        "index": index,
+        "file": file_name,
+        "chars": chars,
+        "excerpt": text[:80],
+        "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
 
 
 @dataclass(frozen=True)
@@ -496,6 +537,28 @@ class PreSendPreview:
     files: tuple = ()
     chunks: tuple = field(default_factory=tuple)
     endpoint: str = ""
+
+    @property
+    def preview_sha256(self):
+        """Fingerprint of this approved preview.
+
+        A hash over the provider, tier, ceiling, model, endpoint, files
+        and per-chunk records (including each chunk's content hash). The
+        sent-payload log records this fingerprint next to the hash of
+        the payload actually sent, tying the send to this approval.
+        """
+        canonical = {
+            "provider": self.provider.name,
+            "tier": self.provider.tier,
+            "matter_ceiling": self.matter_ceiling,
+            "model": self.model,
+            "endpoint": self.endpoint,
+            "files": list(self.files),
+            "file_list": self.file_list,
+            "chunks": [dict(c) for c in self.chunks],
+        }
+        blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     @property
     def badge(self):
@@ -536,6 +599,7 @@ class PreSendPreview:
             "chunks": [dict(c) for c in self.chunks],
             "chunk_count": self.chunk_count,
             "total_chars": self.total_chars,
+            "preview_sha256": self.preview_sha256,
         }
 
     def render(self):
@@ -673,3 +737,122 @@ def export_ai_log(conn, matter_id, *, format="json"):
         writer.writerows(records)
         return out.getvalue()
     raise ValueError(f"unknown export format {format!r}; expected 'json' or 'csv'")
+
+
+# ---------------------------------------------------------------------------
+# Sent-payload log: what was actually sent, tied to the approved preview
+# (issue #24 remainder)
+# ---------------------------------------------------------------------------
+
+def payload_bytes(payload) -> bytes:
+    """The exact bytes of a payload to be sent.
+
+    Bytes pass through unchanged (that identity is the point: the bytes
+    hashed are the bytes sent). Text is encoded as UTF-8, and a mapping
+    or sequence is serialized as canonical JSON.
+    """
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, (bytearray, memoryview)):
+        return bytes(payload)
+    if isinstance(payload, str):
+        return payload.encode("utf-8")
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def sent_payload_hash(payload) -> str:
+    """SHA-256 of the exact payload bytes."""
+    return hashlib.sha256(payload_bytes(payload)).hexdigest()
+
+
+# Backwards-readable alias: the hash is of the payload, not of a prompt.
+payload_sha256 = sent_payload_hash
+
+
+def verify_payload_matches_preview(preview, chunks=None, *, model=None, files=None):
+    """Raise when payload inputs diverge from the approved preview.
+
+    The preview is the approval record. If the chunks (or the model, or
+    the file list) that a caller is about to send differ from the ones
+    the preview carries, the send must fail closed rather than log a
+    hash that quietly describes different material than was approved.
+    Returns the preview when everything supplied matches it.
+    """
+    if not isinstance(preview, PreSendPreview):
+        raise ValueError("a PreSendPreview from build_preview() is required")
+    if model is not None and str(model) != preview.model:
+        raise PrivacyViolationError(
+            f"model {model!r} does not match the approved preview model "
+            f"{preview.model!r}; rebuild the preview and get it approved "
+            "before sending"
+        )
+    if files is not None and [str(f) for f in files] != list(preview.files):
+        raise PrivacyViolationError(
+            "the files to send do not match the approved preview file "
+            "list; rebuild the preview and get it approved before sending"
+        )
+    if chunks is not None:
+        normalized = tuple(_chunk_record(c, i) for i, c in enumerate(chunks))
+        if normalized != tuple(dict(c) for c in preview.chunks):
+            raise PrivacyViolationError(
+                "the chunks to send do not match the chunks in the "
+                "approved preview; rebuild the preview and get it "
+                "approved before sending"
+            )
+    return preview
+
+
+def build_sent_payload_record(preview, payload, chunks=None, *, model=None, files=None):
+    """The record tying one exact payload to its approved preview."""
+    verify_payload_matches_preview(preview, chunks, model=model, files=files)
+    raw = payload_bytes(payload)
+    return {
+        "provider": preview.provider.name,
+        "tier": preview.provider.tier,
+        "model": preview.model,
+        "preview_sha256": preview.preview_sha256,
+        "sent_sha256": hashlib.sha256(raw).hexdigest(),
+        "payload_sha256": hashlib.sha256(raw).hexdigest(),
+        "sent_bytes": len(raw),
+        "chunk_count": preview.chunk_count,
+        "chunk_ids": [
+            f"{c['index']}:{c['file']}" if c["file"] else str(c["index"])
+            for c in preview.chunks
+        ],
+        "chunk_sha256": [c["sha256"] for c in preview.chunks],
+        "files": preview.file_list,
+    }
+
+
+def log_sent_payload(conn, matter_id, preview, payload, *, action="ask", chunks=None,
+                     model=None, files=None, endpoint=None, environ=None, resolver=None):
+    """Write the AI log row for a payload actually sent; return its record.
+
+    Verification runs first: a payload whose chunks or model diverge
+    from the approved preview raises ``PrivacyViolationError`` and no
+    row is written. The row's action carries the hash of the exact
+    payload bytes, its size in bytes, the per-chunk content hashes and
+    the approved preview's fingerprint, so an auditor holding the
+    payload and the preview can prove sent == approved. The record is
+    part of the per-matter AI log, so ``export_ai_log`` exports it with
+    the rest of the log.
+    """
+    record = build_sent_payload_record(preview, payload, chunks, model=model, files=files)
+    base = str(action or "").strip()
+    if not base:
+        raise ValueError("action must not be empty")
+    detail = (
+        f"{base} sent_sha256={record['sent_sha256']}"
+        f" preview_sha256={record['preview_sha256']}"
+        f" sent_bytes={record['sent_bytes']}"
+        f" chunks={record['chunk_count']}"
+        f" chunk_sha256={','.join(record['chunk_sha256']) or '-'}"
+    )
+    row_id = log_ai_use(
+        conn, matter_id, preview.provider, detail, model=preview.model,
+        matter_ceiling=preview.matter_ceiling,
+        endpoint=endpoint, environ=environ, resolver=resolver,
+    )
+    return {**record, "ai_log_id": row_id, "action": detail}
