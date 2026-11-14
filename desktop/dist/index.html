@@ -3,26 +3,80 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>hermes-legal</title>
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 3rem auto; max-width: 42rem; padding: 0 1rem; line-height: 1.5; }
-      code { background: #f0f0f0; padding: 0.1rem 0.3rem; border-radius: 0.25rem; }
-    </style>
+    <title>hermes-legal — Hermes desktop client</title>
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <h1>hermes-legal</h1>
-    <p>
-      Frontend placeholder for the Tauri 2 shell. The shell starts the
-      Python sidecar (<code>legal serve</code>, bound to
-      <code>127.0.0.1:8770</code> only) and loads the local dashboard the
-      sidecar serves. This static page is only what you see before the
-      sidecar answers, or if it failed to start.
-    </p>
-    <p>
-      The Hermes plugin and the local dashboard remain fully usable
-      without this shell. See <code>docs/desktop.md</code> for the
-      decision and <code>desktop/packaging.md</code> for how installers
-      are built and signed.
-    </p>
+    <header>
+      <h1>hermes-legal</h1>
+      <p class="tagline">Lightweight desktop client for your Hermes agent.</p>
+      <div class="status" role="status">
+        <span id="status-dot" data-state="idle" aria-hidden="true"></span>
+        <span id="status-text">Not connected.</span>
+      </div>
+    </header>
+
+    <section aria-labelledby="connection-heading">
+      <h2 id="connection-heading">Connection</h2>
+      <div class="connection-grid">
+        <label>
+          Scheme
+          <select id="scheme">
+            <option value="http">http</option>
+            <option value="https">https</option>
+          </select>
+        </label>
+        <label>
+          Host
+          <input id="host" type="text" placeholder="127.0.0.1" autocomplete="off" />
+        </label>
+        <label>
+          Port
+          <input id="port" type="number" min="1" max="65535" />
+        </label>
+        <label>
+          Token (API_SERVER_KEY)
+          <input id="token" type="password" placeholder="Bearer token" autocomplete="off" />
+        </label>
+        <button id="connect" type="button">Connect</button>
+      </div>
+      <p class="note">
+        Settings are saved on this computer only. Default port 8642 is the
+        Hermes API server; it must be enabled with API_SERVER_ENABLED=true
+        and the token is its API_SERVER_KEY.
+      </p>
+      <p class="note" id="approval-note">
+        Approvals: connect to see whether this server advertises approval support.
+      </p>
+      <p class="error" id="error" role="alert" hidden></p>
+    </section>
+
+    <main>
+      <section aria-labelledby="sessions-heading">
+        <div class="row">
+          <h2 id="sessions-heading">Sessions</h2>
+          <button id="refresh-sessions" type="button">Refresh</button>
+          <button id="new-session" type="button">New session</button>
+        </div>
+        <div id="session-list"></div>
+      </section>
+
+      <section aria-labelledby="chat-heading">
+        <h2 id="chat-heading">Chat</h2>
+        <div id="approval" hidden>
+          <strong>Approval requested</strong>
+          <pre id="approval-text"></pre>
+          <div id="approval-choices"></div>
+        </div>
+        <div id="messages" aria-live="polite"></div>
+        <form id="composer">
+          <label class="sr-only" for="input">Message Hermes</label>
+          <textarea id="input" rows="3" placeholder="Message Hermes…"></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="./js/app.mjs"></script>
   </body>
 </html>
