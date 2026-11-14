@@ -1012,6 +1012,139 @@ class GovInfoClient:
 
 
 # ---------------------------------------------------------------------------
+# Caselaw Access Project (CAP) client
+# ---------------------------------------------------------------------------
+
+CAP_BASE_URL = "https://api.case.law/v1"
+CAP_TOKEN_ENV = ("CAP_API_TOKEN", "HERMES_LEGAL_CAP_TOKEN")
+
+
+def _extract_cap_opinions_text(record: dict[str, Any]) -> str:
+    """Concatenate opinion text from a CAP case record's casebody, if present."""
+    casebody = record.get("casebody")
+    if not isinstance(casebody, dict):
+        return ""
+    data = casebody.get("data")
+    if not isinstance(data, dict):
+        return ""
+    opinions = data.get("opinions")
+    if not isinstance(opinions, list):
+        return ""
+    parts = [
+        _strip_html(str(op.get("text", "")))
+        for op in opinions
+        if isinstance(op, dict) and op.get("text")
+    ]
+    return "\n".join(part for part in parts if part)
+
+
+def parse_cap_lookup(citation: Citation | str, payload: Any,
+                     quote: str | None = None) -> VerificationResult:
+    """Interpret a CAP ``/cases/?cite=...`` JSON payload into a VerificationResult."""
+    key = _display(citation)
+    if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+        return VerificationResult(
+            citation=key, status="unverified", source="caselaw-access-project",
+            detail="Unexpected Caselaw Access Project response shape.")
+    results = payload["results"]
+    if not results:
+        return VerificationResult(
+            citation=key, status="not_found", source="caselaw-access-project",
+            detail="Caselaw Access Project returned no matching case for that citation.")
+    if len(results) > 1:
+        names = [str(r.get("name_abbreviation") or r.get("name") or "(unnamed)") for r in results[:5]]
+        return VerificationResult(
+            citation=key, status="ambiguous", source="caselaw-access-project",
+            detail=f"Caselaw Access Project returned {len(results)} matching cases: {'; '.join(names)}.")
+    record = results[0] if isinstance(results[0], dict) else {}
+    matched_name = str(record.get("name_abbreviation") or record.get("name") or "") or None
+    source_url = str(record.get("frontend_url") or record.get("url") or "") or None
+    if quote:
+        opinion_text = _extract_cap_opinions_text(record)
+        if opinion_text:
+            if _quote_in(quote, opinion_text):
+                return VerificationResult(
+                    citation=key, status="quote_verified", source="caselaw-access-project",
+                    detail="Caselaw Access Project matched the case and verified the quotation in the opinion text.",
+                    matched_name=matched_name, source_url=source_url)
+            return VerificationResult(
+                citation=key, status="quote_not_verified", source="caselaw-access-project",
+                detail="Caselaw Access Project matched the case, but the quotation was not found in the opinion text.",
+                matched_name=matched_name, source_url=source_url)
+        return VerificationResult(
+            citation=key, status="exists", source="caselaw-access-project",
+            detail="Caselaw Access Project matched the case, but no opinion text was available to verify the quotation.",
+            matched_name=matched_name, source_url=source_url)
+    return VerificationResult(
+        citation=key, status="exists", source="caselaw-access-project",
+        detail="Caselaw Access Project matched the case.",
+        matched_name=matched_name, source_url=source_url)
+
+
+class CaselawAccessClient:
+    """Verify case citations against the Caselaw Access Project (CAP) API.
+
+    ``opener`` is injectable so offline tests replay recorded fixture JSON
+    through the same parsing path as live requests. Non-case citations return
+    ``unverified`` because CAP covers case law only.
+    """
+
+    name = "caselaw-access-project"
+
+    def __init__(self, token: str | None = None, *,
+                 base_url: str = CAP_BASE_URL,
+                 opener: Opener | None = None, timeout: float = 15.0):
+        if token is None:
+            for env_name in CAP_TOKEN_ENV:
+                token = os.environ.get(env_name) or None
+                if token:
+                    break
+        self._token = token
+        self.base_url = base_url.rstrip("/")
+        self._opener = opener or urllib.request.urlopen
+        self.timeout = timeout
+
+    @property
+    def has_token(self) -> bool:
+        return bool(self._token)
+
+    def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
+        key = _display(citation)
+        cite = _as_citation(citation)
+        if cite is not None and cite.kind != "case":
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail="Caselaw Access Project covers case citations only.")
+        query_cite = cite.normalized if cite is not None else key
+        params = {"cite": query_cite}
+        if quote:
+            params["full_case"] = "true"
+        url = f"{self.base_url}/cases/?{urllib.parse.urlencode(params)}"
+        headers = {"Accept": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Token {self._token}"
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with self._opener(request, timeout=self.timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail=f"Caselaw Access Project returned HTTP {exc.code}.")
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail=f"Caselaw Access Project request failed: {exc}.")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail="Caselaw Access Project returned invalid JSON.")
+        return parse_cap_lookup(citation, payload, quote=quote)
+
+
+# ---------------------------------------------------------------------------
 # Resolver routing, the LOCAL_ONLY guard, and the lookup preview
 # ---------------------------------------------------------------------------
 
@@ -1019,22 +1152,25 @@ class ResolverRouter:
     """Route each citation to the resolver that covers its kind.
 
     Statutes go to the statute resolver (govinfo), case citations to the
-    case resolver (CourtListener). A kind with no configured resolver is
+    case resolver (CourtListener) with an optional fallback case resolver
+    (e.g. Caselaw Access Project). A kind with no configured resolver is
     ``unverified`` with the gap named -- never silently sent to a resolver
     that does not cover it.
     """
 
     def __init__(self, case_resolver: CitationResolver | None = None,
-                 statute_resolver: CitationResolver | None = None):
+                 statute_resolver: CitationResolver | None = None,
+                 fallback_case_resolver: CitationResolver | None = None):
         self.case_resolver = case_resolver
         self.statute_resolver = statute_resolver
-        names = [r.name for r in (case_resolver, statute_resolver) if r is not None]
+        self.fallback_case_resolver = fallback_case_resolver
+        names = [r.name for r in (case_resolver, fallback_case_resolver, statute_resolver) if r is not None]
         self.name = "+".join(names) if names else "none"
 
     @property
     def has_token(self) -> bool:
         return any(bool(getattr(r, "has_token", False)) for r in
-                   (self.case_resolver, self.statute_resolver) if r is not None)
+                   (self.case_resolver, self.fallback_case_resolver, self.statute_resolver) if r is not None)
 
     def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
         cite = _as_citation(citation)
@@ -1045,11 +1181,18 @@ class ResolverRouter:
                     citation=key, status="unverified", source="none",
                     detail="No statute resolver was configured; the citation has not been checked.")
             return self.statute_resolver.verify(citation, quote=quote)
-        if self.case_resolver is None:
+        primary = self.case_resolver or self.fallback_case_resolver
+        if primary is None:
             return VerificationResult(
                 citation=key, status="unverified", source="none",
                 detail="No case resolver was configured; the citation has not been checked.")
-        return self.case_resolver.verify(citation, quote=quote)
+        result = primary.verify(citation, quote=quote)
+        if (self.case_resolver is not None and self.fallback_case_resolver is not None
+                and result.status in ("not_found", "unverified")):
+            fallback_result = self.fallback_case_resolver.verify(citation, quote=quote)
+            if fallback_result.status not in ("unverified", "not_found") or result.status == "unverified":
+                return fallback_result
+        return result
 
 
 #: Ceilings at which a network citation lookup may leave the device. Any

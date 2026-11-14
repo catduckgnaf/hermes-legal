@@ -83,22 +83,20 @@ def _run_ask(args):
 
 def _default_cite_resolver():
     """The resolver `legal cite-check` runs by default: a router pairing
-    a CourtListener client (case citations) with a govinfo client
-    (U.S.C. statutes) when a CourtListener token or a govinfo API key is
-    configured in the environment, else None, in which case cite-check
-    stays fully offline and reports every citation as unverified. The
-    govinfo link service needs no key, but it is only wired in alongside
-    a configured credential so the no-token path stays exactly as
-    offline as before."""
-    from .citations import GovInfoClient, ResolverRouter
-    from .citations import CourtListenerClient
+    CourtListener / Caselaw Access Project (case citations) with govinfo
+    (U.S.C. statutes) when a CourtListener token, CAP token, or govinfo API
+    key is configured in the environment, else None, in which case cite-check
+    stays fully offline and reports every citation as unverified."""
+    from .citations import CaselawAccessClient, CourtListenerClient, GovInfoClient, ResolverRouter
     client = CourtListenerClient()
+    cap = CaselawAccessClient()
     govinfo = GovInfoClient()
-    if not client.has_token and not govinfo.has_api_key:
+    if not client.has_token and not cap.has_token and not govinfo.has_api_key:
         return None
     return ResolverRouter(
-        case_resolver=client if client.has_token else None,
-        statute_resolver=govinfo)
+        case_resolver=client if client.has_token else (cap if cap.has_token else None),
+        statute_resolver=govinfo,
+        fallback_case_resolver=cap if (client.has_token and cap.has_token) else None)
 
 def _cite_check_ceiling(args):
     """(ceiling, matter_id, error) for cite-check: an explicit ceiling
