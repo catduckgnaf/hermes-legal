@@ -4,7 +4,8 @@ These tests parse the Tauri configuration and the packaging manifests
 with the standard library only and pin the packaging facts the rest of
 the product relies on: bundle targets for both platforms, the Python
 sidecar, the Flatpak network permission, the winget installer set, and
-a desktop workflow that can never gate a pull request. They also pin
+the desktop workflow (dispatch full build plus the pull-request
+Windows smoke build and mock-server client tests). They also pin
 the signing posture: signing is documented as required secrets, and no
 certificate or key material is committed anywhere in the scaffold.
 """
@@ -132,16 +133,38 @@ def test_winget_installers_are_the_signed_nsis_and_msi():
     assert not re.search(r"^\s+InstallerSha256:", installer, re.M)
 
 
-def test_desktop_workflow_is_manual_only_and_builds_both_platforms():
+def test_desktop_workflow_dispatch_and_pr_windows_build():
     workflow = (ROOT / ".github" / "workflows" / "desktop.yml").read_text()
     assert re.search(r"^on:\s*\n\s+workflow_dispatch:", workflow, re.M)
-    # The workflow must never gate a pull request.
-    assert "pull_request" not in workflow
+    # Pull requests that touch desktop/** run the client tests and an
+    # unsigned Windows build (the desktop client direction, issue #34);
+    # the dispatched full build keeps both platforms.
+    assert "pull_request:" in workflow
+    assert '"desktop/**"' in workflow
+    assert "build-windows-pr" in workflow
+    assert "cargo tauri build --bundles nsis,msi" in workflow
+    assert "npm test" in workflow
     assert "windows-latest" in workflow
     assert "ubuntu-latest" in workflow
     # Signing material is referenced as secrets, never as literal values.
     assert "secrets.TAURI_SIGNING_PRIVATE_KEY" in workflow
     assert "secrets.WINDOWS_CERTIFICATE" in workflow
+
+
+def test_desktop_client_frontend_and_tests_exist():
+    dist = DESKTOP / "dist"
+    index = (dist / "index.html").read_text()
+    assert "js/app.mjs" in index
+    for module in ("config.mjs", "sse.mjs", "client.mjs", "app.mjs"):
+        assert (dist / "js" / module).is_file()
+    # The client speaks the researched Hermes API server protocol.
+    client = (dist / "js" / "client.mjs").read_text()
+    for route in ("/health", "/v1/capabilities", "/api/sessions", "/chat/stream", "/approval"):
+        assert route in client
+    mock = (DESKTOP / "tests" / "mock-hermes.mjs").read_text()
+    assert "approval.request" in mock and "assistant.delta" in mock
+    package = json.loads((DESKTOP / "package.json").read_text())
+    assert "node --test" in package["scripts"]["test"]
 
 
 def test_no_signing_material_is_committed():
