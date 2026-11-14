@@ -30,20 +30,20 @@ Thanks for helping improve Hermes Legal. This guide describes the repository wor
 
 ## Run checks
 
-Use Python 3.12 or newer. From the repository root, create an isolated environment, install test dependencies and run the offline suite:
+Use Python 3.12 or newer, with uv. From the repository root, sync the locked dependencies and run the offline suite:
 
 ```bash
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e ".[test]"
-python -m pytest -q tests
+uv sync
+uv run python -m pytest -q
 ```
+
+The same gates are available through the one check entry point: `uv run python scripts/check.py ci` runs the offline suite, and `uv run python scripts/check.py full` adds the spelling gate and, when pull request metadata is supplied with `--metadata FILE`, the contribution gate.
 
 Relevant focused checks can be run individually. For example:
 
 ```bash
-python3 -m pytest -q tests/test_cli_doc.py
-python3 -m pytest -q tests/test_providers.py
+uv run python -m pytest -q tests/test_cli_doc.py
+uv run python -m pytest -q tests/test_providers.py
 ```
 
 Checks that call a real external legal data service are marked `live` and are excluded from the default run; run them explicitly with `python -m pytest -m live`. The offline suite uses fake transports and synthetic fixtures and does not contact a matter or a real service. Check the CI workflow for the current Python versions and additional integration jobs.
@@ -73,3 +73,7 @@ A line that must keep a British spelling (quoted upstream text, an exact identif
   copy that presents a model-generated citation as checked.
 - **Writes ask first.** Filing, sending, signing and syncing stay approval
   gated, and refused in unattended runs.
+
+## Releases
+
+Releases are proposed by Release Please (`.github/workflows/release-please.yml`), which opens a release pull request from the commits on `main`. That workflow authenticates with the `RELEASE_PLEASE_TOKEN` repository secret — a fine-grained personal access token or GitHub App token with contents and pull-requests write access — rather than the default workflow token, because pull requests opened with the default token do not trigger other workflows and would never run the required CI and contribution checks. The secret must exist in the repository settings or release pull requests will lack their required checks; creating or rotating it is the repository owner's step, and no token value ever belongs in the repository itself.

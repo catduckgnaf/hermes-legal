@@ -12,5 +12,15 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         with:
+          # Use the RELEASE_PLEASE_TOKEN secret (a fine-grained personal
+          # access token or GitHub App token with contents and
+          # pull-requests write access), NOT the default GITHUB_TOKEN:
+          # pull requests opened with the default token do not trigger
+          # other workflows, so a release PR would never run the required
+          # CI and contribution checks and could not merge. The secret
+          # must exist in this repository's settings or release PRs will
+          # lack their required checks; creating it is the repository
+          # owner's step (see "Releases" in CONTRIBUTING.md).
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json

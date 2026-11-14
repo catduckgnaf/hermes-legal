@@ -1,6 +1,6 @@
 name: Integration request
 description: Propose a connection to a legal service, document store or data source.
-labels: ["enhancement"]
+labels: ["enhancement", "integration"]
 body:
   - type: markdown
     attributes:
