@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "hermes-legal",
+        "title": "hermes-legal - Hermes desktop client",
         "width": 1280,
         "height": 860,
         "minWidth": 960,
@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:8770 ws://127.0.0.1:8770"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' http: https: ws: wss:"
     }
   },
   "bundle": {

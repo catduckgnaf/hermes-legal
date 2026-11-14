@@ -1,5 +1,12 @@
 //! Tauri 2 shell for hermes-legal.
 //!
+//! The frontend in `desktop/dist` is the desktop client: it connects
+//! from the WebView to the Hermes API server the user configured (see
+//! `desktop/PROTOCOL.md`), which is why the content security policy in
+//! `tauri.conf.json` allows outbound http/https/ws/wss connections
+//! instead of pinning one loopback origin. The shell itself stays
+//! minimal and owns no client or legal logic.
+//!
 //! The shell owns no legal logic. It starts the Python core as a sidecar
 //! process (`legal serve`, which binds 127.0.0.1:8770 only) and loads the
 //! local dashboard that the sidecar serves. If the sidecar cannot start,

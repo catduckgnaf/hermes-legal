@@ -1,0 +1,148 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+}
+body {
+  margin: 0 auto;
+  max-width: 72rem;
+  padding: 1rem 1.25rem 2rem;
+  line-height: 1.5;
+}
+header h1 {
+  margin-bottom: 0;
+}
+.tagline {
+  margin-top: 0.25rem;
+  opacity: 0.8;
+}
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+#status-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: gray;
+  display: inline-block;
+}
+#status-dot[data-state="ok"] {
+  background: #1a9e54;
+}
+#status-dot[data-state="error"] {
+  background: #c62f3b;
+}
+#status-dot[data-state="pending"] {
+  background: #d9930d;
+}
+.connection-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+.connection-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+.note {
+  font-size: 0.9rem;
+  opacity: 0.85;
+}
+.error {
+  color: #c62f3b;
+  white-space: pre-wrap;
+}
+main {
+  display: grid;
+  grid-template-columns: 18rem 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  main {
+    grid-template-columns: 1fr;
+  }
+}
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.session {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  cursor: pointer;
+}
+.session.active {
+  outline: 2px solid currentColor;
+}
+.session-meta {
+  font-size: 0.8rem;
+  opacity: 0.75;
+}
+#messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 12rem;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 0.5rem 0;
+}
+.message-role {
+  font-size: 0.8rem;
+  font-weight: 600;
+  opacity: 0.75;
+}
+.message-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.message.tool {
+  font-size: 0.85rem;
+  opacity: 0.8;
+}
+#approval {
+  border: 2px solid #d9930d;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+#approval pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+#approval-choices {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+button.danger {
+  border-color: #c62f3b;
+}
+#composer {
+  display: flex;
+  gap: 0.5rem;
+  align-items: end;
+}
+#composer textarea {
+  flex: 1;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

@@ -9,11 +9,14 @@ repository is:
   `src/main.rs` and `src/lib.rs` (the shell starts the sidecar), and
   `capabilities/default.json` (the sidecar is the only program the shell
   may execute).
-- `dist/` — the frontend placeholder the shell shows before the sidecar
-  answers. The real frontend is the dashboard the sidecar serves.
+- `dist/` — the desktop client frontend: plain HTML, CSS and
+  JavaScript that connects to the Hermes API server the user
+  configured (see `README.md` and `PROTOCOL.md` in this directory).
 - `flatpak/` — the Flatpak manifest and its permission justifications.
 - `winget/` — the winget manifest set for the signed Windows installers.
-- `.github/workflows/desktop.yml` — the manually triggered build.
+- `.github/workflows/desktop.yml` — the desktop build: pull-request
+  tests and Windows smoke build, plus the manually triggered full
+  build.
 
 ## Bundle targets
 
@@ -28,10 +31,13 @@ the shell. Packaging never becomes a requirement for the Python core.
 
 ## Building
 
-The desktop workflow is dispatched by hand
-(`.github/workflows/desktop.yml`, `workflow_dispatch` only) so it never
-gates a pull request. It builds the shell on `windows-latest` and
-`ubuntu-latest` and uploads the bundle artifacts for smoke testing.
+The desktop workflow (`.github/workflows/desktop.yml`) runs on pull
+requests that touch `desktop/**`: the client tests against the mock
+Hermes server, and an unsigned Windows build
+(`cargo tauri build --bundles nsis,msi`) for smoke. The full build is
+dispatched by hand (`workflow_dispatch`): it builds the shell on
+`windows-latest` and `ubuntu-latest` and uploads the bundle artifacts
+for smoke testing.
 
 Two build inputs are still scaffold placeholders, and artifacts built
 with them are never a release:
@@ -106,7 +112,7 @@ modules.
 - [x] NSIS, MSI, AppImage, and `.deb` bundle targets declared
 - [x] Flatpak manifest with the network permission documented and justified
 - [x] winget manifest set for the signed installers
-- [x] Manually triggered desktop workflow for Windows and Linux
+- [x] Desktop workflow: manually triggered full build for Windows and Linux, plus pull-request client tests and an unsigned Windows build
 - [ ] Windows code-signing certificate or Azure Trusted Signing secret configured
 - [ ] Updater signing key generated, public key committed, updater plugin registered
 - [ ] Python core packaged as a real per-target sidecar executable
