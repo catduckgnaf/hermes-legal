@@ -47,9 +47,12 @@ Statuses
     citation, because history is always unknown here).
 
 Everything in this module is standard library only. Network access happens
-only inside :class:`CourtListenerClient` (via ``urllib``), and only when a
-caller explicitly verifies through it. Offline tests use recorded fixture
-JSON; live calls belong in tests marked ``live`` only.
+only inside :class:`CourtListenerClient` and :class:`GovInfoClient` (via
+``urllib``), and only when a caller explicitly verifies through one.
+Citation lookups leave the device, so a network resolver wrapped in
+:class:`CeilingGuardedResolver` performs no lookup at all on a LOCAL_ONLY
+matter. Offline tests use recorded fixture JSON; live calls belong in
+tests marked ``live`` only.
 """
 from __future__ import annotations
 
@@ -98,6 +101,20 @@ COURTLISTENER_TOKEN_ENV = (
 )
 
 COURTLISTENER_BASE_URL = "https://www.courtlistener.com/api/rest/v4"
+
+#: govinfo: statutes are resolved through the govinfo link service (which
+#: resolves a title/section pair to the official text) and identified with
+#: the govinfo package API's ``USCODE-<edition>-title<N>`` package ids.
+GOVINFO_BASE_URL = "https://api.govinfo.gov"
+GOVINFO_LINK_BASE_URL = "https://www.govinfo.gov"
+GOVINFO_API_KEY_ENV = (
+    "GOVINFO_API_KEY",
+    "HERMES_LEGAL_GOVINFO_API_KEY",
+)
+#: The U.S. Code edition the govinfo package ids name. The link service
+#: itself always resolves to the current text; the edition is used only
+#: to build the package id reported alongside a result.
+GOVINFO_USCODE_EDITION = 2023
 
 # ---------------------------------------------------------------------------
 # Reporters
@@ -596,6 +613,60 @@ class CourtListenerClient:
         data = urllib.parse.urlencode({"text": text}).encode("utf-8")
         return self._request_json("/citation-lookup/", data=data)
 
+    def _opinion_urls(self, cluster: Mapping[str, Any]) -> list[str]:
+        """Opinion API URLs a cluster points at, in preference order.
+
+        Citation-lookup clusters carry no opinion text; they point at the
+        opinions through ``sub_opinions`` (API URLs, ids, or objects with
+        an ``id``). A bare ``opinion_id`` is honored too. Anything else is
+        ignored rather than guessed at.
+        """
+        urls: list[str] = []
+        candidates: list[Any] = []
+        for field_name in ("sub_opinions", "opinions"):
+            value = cluster.get(field_name)
+            if isinstance(value, list):
+                candidates.extend(value)
+            elif value is not None:
+                candidates.append(value)
+        if cluster.get("opinion_id") is not None:
+            candidates.append(cluster["opinion_id"])
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                candidate = candidate.get("id") or candidate.get("resource_uri") or ""
+            text = str(candidate or "").strip()
+            if not text:
+                continue
+            if text.startswith("http"):
+                urls.append(text)
+            elif text.startswith("/"):
+                urls.append("https://www.courtlistener.com" + text)
+            elif text.isdigit():
+                urls.append(f"{self.base_url}/opinions/{text}/")
+        return urls
+
+    def fetch_opinion_text(self, cluster: Mapping[str, Any]) -> str:
+        """Fetch the opinion text for one matched cluster, or ``""``.
+
+        Citation-lookup responses carry no opinion text, so a quotation
+        can only be checked after this second fetch. A failure returns
+        ``""`` -- no text -- never a fabricated excerpt.
+        """
+        for url in self._opinion_urls(cluster):
+            headers = {"Accept": "application/json"}
+            if self._token:
+                headers["Authorization"] = f"Token {self._token}"
+            request = urllib.request.Request(url, headers=headers, method="GET")
+            try:
+                with self._opener(request, timeout=self.timeout) as response:
+                    body = response.read().decode("utf-8", errors="replace")
+            except Exception:
+                continue
+            text = _opinion_text_from_body(body)
+            if text.strip():
+                return text
+        return ""
+
     def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
         key = _display(citation)
         try:
@@ -613,7 +684,69 @@ class CourtListenerClient:
                 citation=key, status="unverified", source=self.name,
                 detail=f"CourtListener lookup could not be completed ({type(exc).__name__}); "
                        "the citation was not checked.")
-        return parse_courtlistener_lookup(payload, citation, quote=quote)
+        result = parse_courtlistener_lookup(payload, citation, quote=quote)
+        if not quote or result.status not in ("exists", "quote_not_verified"):
+            return result
+        # The lookup cluster carried no usable opinion text (the usual
+        # live shape), so fetch the opinion itself before judging the
+        # quotation. Present -> quote_verified; absent -> the distinct
+        # quote_not_verified status; unfetchable -> stays ``exists`` here
+        # and the shared resolver checks in ``_resolve`` block it as an
+        # unconfirmed quotation rather than letting it pass.
+        clusters = _clusters_from_payload(payload)
+        if len(clusters) != 1:
+            return result
+        opinion_text = self.fetch_opinion_text(clusters[0])
+        if not opinion_text.strip():
+            return replace(result, detail=(
+                "Matched a CourtListener opinion cluster, but no opinion "
+                "text could be fetched, so the quotation could not be "
+                "confirmed."))
+        if _quote_in(quote, opinion_text):
+            return replace(result, status="quote_verified", detail=(
+                "Matched a CourtListener opinion cluster and the quotation "
+                "was found in the fetched opinion text."))
+        return replace(result, status="quote_not_verified", detail=(
+            "Matched a CourtListener opinion cluster; the quotation was "
+            "not found in the fetched opinion text."))
+
+
+def _clusters_from_payload(payload: Any) -> list[dict[str, Any]]:
+    """Every cluster dict in a citation-lookup payload, in order."""
+    items: list[Any] = []
+    if isinstance(payload, list):
+        items = payload
+    elif isinstance(payload, dict):
+        items = payload["results"] if isinstance(payload.get("results"), list) else [payload]
+    clusters: list[dict[str, Any]] = []
+    for item in items:
+        if isinstance(item, dict) and isinstance(item.get("clusters"), list):
+            clusters.extend(c for c in item["clusters"] if isinstance(c, dict))
+    return clusters
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"<[^>]+>", " ", text)
+
+
+def _opinion_text_from_body(body: str) -> str:
+    """Opinion text from an opinion API response body.
+
+    The API returns JSON with ``plain_text`` (preferred) or HTML fields;
+    a non-JSON body is treated as the text itself.
+    """
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return _strip_html(body)
+    if not isinstance(data, dict):
+        return ""
+    for field_name in ("plain_text", "html_with_citations", "html_lawbox",
+                       "html_columbia", "html_anon_2020", "html", "text"):
+        value = data.get(field_name)
+        if isinstance(value, str) and value.strip():
+            return _strip_html(value)
+    return ""
 
 
 def parse_courtlistener_lookup(payload: Any, citation: Citation | str,
@@ -671,6 +804,7 @@ def parse_courtlistener_lookup(payload: Any, citation: Citation | str,
                 status = "quote_verified"
                 detail = "Matched a CourtListener opinion cluster and the quotation was found in the retrieved text."
             elif texts.strip():
+                status = "quote_not_verified"
                 detail = "Matched a CourtListener opinion cluster; the quotation was not found in the retrieved text."
         return VerificationResult(
             citation=key, status=status, source=CourtListenerClient.name,
@@ -686,12 +820,307 @@ def parse_courtlistener_lookup(payload: Any, citation: Citation | str,
 
 
 # ---------------------------------------------------------------------------
+# govinfo statute resolver (U.S.C. citations)
+# ---------------------------------------------------------------------------
+
+def govinfo_package_id(title: int, edition: int = GOVINFO_USCODE_EDITION) -> str:
+    """The govinfo package id for one U.S. Code title, e.g. ``USCODE-2023-title42``."""
+    return f"USCODE-{edition}-title{title}"
+
+
+def govinfo_section_root(section: str) -> str:
+    """The section number a govinfo link resolves: ``501(c)(3)`` -> ``501``."""
+    match = re.match(r"[\d]+(?:\.[\d]+)?[a-z]*", str(section or "").strip())
+    return match.group(0) if match else str(section or "").strip()
+
+
+def parse_govinfo_package_summary(payload: Any, title: int) -> bool:
+    """True when a govinfo package-summary payload names the title's package."""
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("packageId") or "") == govinfo_package_id(title)
+
+
+class GovInfoClient:
+    """Verify U.S.C. statute citations against govinfo.
+
+    CourtListener citation lookup does not cover statutes, so this is the
+    resolver that lets a statute pass the Verify-All gate on evidence
+    instead of only on a human attestation (attestation remains available
+    as a fallback). Existence is checked at section granularity through
+    the govinfo link service -- ``/link/uscode/<title>/<section>`` with
+    ``link-type=html`` -- which resolves only when that section exists;
+    the result also names the title's package id from the package API.
+    ``opener`` is injectable exactly like the CourtListener client's, so
+    offline tests replay recorded fixture responses through the same
+    parsing path. An API key (see :data:`GOVINFO_API_KEY_ENV`) is sent
+    when configured; the link service works without one.
+
+    Honest statuses only: a section that resolves is ``exists`` (or
+    ``quote_verified`` / ``quote_not_verified`` when a quotation is
+    supplied and the retrieved text decides it); the link service's 404
+    is ``not_found``; any other failure is ``unverified``, never a guess.
+    Non-statute citations are ``unverified`` from this resolver: it does
+    not cover them.
+    """
+
+    name = "govinfo"
+
+    def __init__(self, api_key: str | None = None, *,
+                 base_url: str = GOVINFO_BASE_URL,
+                 link_base_url: str = GOVINFO_LINK_BASE_URL,
+                 opener: Opener | None = None, timeout: float = 15.0,
+                 edition: int = GOVINFO_USCODE_EDITION):
+        if api_key is None:
+            for env_name in GOVINFO_API_KEY_ENV:
+                api_key = os.environ.get(env_name) or None
+                if api_key:
+                    break
+        self._api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.link_base_url = link_base_url.rstrip("/")
+        self._opener = opener or urllib.request.urlopen
+        self.timeout = timeout
+        self.edition = edition
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self._api_key)
+
+    # The router and the CLI treat any configured credential uniformly.
+    has_token = has_api_key
+
+    def link_url(self, citation: Citation | str) -> str:
+        cite = _as_citation(citation)
+        title = cite.volume if cite is not None else 0
+        section = govinfo_section_root(cite.section or "") if cite is not None else ""
+        return f"{self.link_base_url}/link/uscode/{title}/{section}"
+
+    def fetch_statute_text(self, citation: Citation | str) -> str:
+        """The section's text from the govinfo link service (HTML stripped)."""
+        url = self.link_url(citation) + "?link-type=html"
+        if self._api_key:
+            url += f"&api_key={urllib.parse.quote(self._api_key)}"
+        request = urllib.request.Request(url, headers={"Accept": "text/html"}, method="GET")
+        with self._opener(request, timeout=self.timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        return _strip_html(body)
+
+    def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
+        key = _display(citation)
+        cite = _as_citation(citation)
+        if cite is None or cite.kind != "statute":
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail="govinfo resolves U.S.C. statute citations only; this citation was not checked by govinfo.")
+        try:
+            text = self.fetch_statute_text(cite)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return VerificationResult(
+                    citation=key, status="not_found", source=self.name,
+                    detail="govinfo found no such U.S. Code section at the link service.",
+                    source_url=self.link_url(cite))
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail=f"govinfo lookup failed (HTTP {exc.code}); the citation was not checked.")
+        except Exception as exc:  # network, DNS, malformed body, timeout
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail=f"govinfo lookup could not be completed ({type(exc).__name__}); "
+                       "the citation was not checked.")
+        package = govinfo_package_id(cite.volume or 0, self.edition)
+        status = "exists"
+        detail = f"govinfo resolved this section (package {package})."
+        if quote and text.strip():
+            if _quote_in(quote, text):
+                status = "quote_verified"
+                detail = f"govinfo resolved this section (package {package}) and the quotation was found in the retrieved text."
+            else:
+                status = "quote_not_verified"
+                detail = f"govinfo resolved this section (package {package}); the quotation was not found in the retrieved text."
+        elif quote:
+            detail = f"govinfo resolved this section (package {package}); no text was retrieved, so the quotation could not be confirmed."
+        return VerificationResult(
+            citation=key, status=status, source=self.name, detail=detail,
+            source_url=self.link_url(cite))
+
+
+# ---------------------------------------------------------------------------
+# Resolver routing, the LOCAL_ONLY guard, and the lookup preview
+# ---------------------------------------------------------------------------
+
+class ResolverRouter:
+    """Route each citation to the resolver that covers its kind.
+
+    Statutes go to the statute resolver (govinfo), case citations to the
+    case resolver (CourtListener). A kind with no configured resolver is
+    ``unverified`` with the gap named -- never silently sent to a resolver
+    that does not cover it.
+    """
+
+    def __init__(self, case_resolver: CitationResolver | None = None,
+                 statute_resolver: CitationResolver | None = None):
+        self.case_resolver = case_resolver
+        self.statute_resolver = statute_resolver
+        names = [r.name for r in (case_resolver, statute_resolver) if r is not None]
+        self.name = "+".join(names) if names else "none"
+
+    @property
+    def has_token(self) -> bool:
+        return any(bool(getattr(r, "has_token", False)) for r in
+                   (self.case_resolver, self.statute_resolver) if r is not None)
+
+    def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
+        cite = _as_citation(citation)
+        key = _display(citation)
+        if cite is not None and cite.kind == "statute":
+            if self.statute_resolver is None:
+                return VerificationResult(
+                    citation=key, status="unverified", source="none",
+                    detail="No statute resolver was configured; the citation has not been checked.")
+            return self.statute_resolver.verify(citation, quote=quote)
+        if self.case_resolver is None:
+            return VerificationResult(
+                citation=key, status="unverified", source="none",
+                detail="No case resolver was configured; the citation has not been checked.")
+        return self.case_resolver.verify(citation, quote=quote)
+
+
+#: Ceilings at which a network citation lookup may leave the device. Any
+#: other ceiling value -- LOCAL_ONLY, or an unrecognized string -- blocks:
+#: an unknown ceiling fails closed, exactly like the provider router.
+LOOKUP_ALLOWED_CEILINGS = ("ZERO_RETENTION", "STANDARD")
+
+
+def lookup_block_reason(ceiling: str | None) -> str | None:
+    """Why a network citation lookup is blocked at *ceiling*, or ``None``.
+
+    Citation lookups send citation strings off the device. On a
+    LOCAL_ONLY matter that must never happen silently: the lookup is
+    blocked, the citation stays ``unverified``, and the recorded human
+    attestation path is the way through for the classes it covers.
+    """
+    normalized = str(ceiling or "").strip().upper()
+    if normalized in LOOKUP_ALLOWED_CEILINGS:
+        return None
+    if normalized == "LOCAL_ONLY":
+        return ("Not looked up: this matter is LOCAL_ONLY and a citation "
+                "lookup would send its citations off the device. The "
+                "citation stays unverified; record a human attestation "
+                "for a citation class a resolver cannot cover, or raise "
+                "the matter ceiling before looking it up.")
+    return (f"Not looked up: the matter ceiling {ceiling!r} is not one a "
+            "network citation lookup is allowed at, so the lookup was "
+            "blocked rather than sent.")
+
+
+@dataclass(frozen=True)
+class CitationLookupPreview:
+    """The pre-send preview for citation lookups: exactly what would go
+    out, to which resolver, under which ceiling -- mirroring the provider
+    pre-send preview in :mod:`hermes_legal.providers`. Building the
+    preview performs no lookup."""
+
+    citations: tuple[str, ...] = ()
+    resolver_name: str = ""
+    ceiling: str = ""
+    leaves_device: bool = True
+    blocked_reason: str | None = None
+
+    @property
+    def blocked(self) -> bool:
+        return self.blocked_reason is not None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "citations": list(self.citations),
+            "resolver": self.resolver_name,
+            "ceiling": self.ceiling,
+            "leaves_device": self.leaves_device,
+            "blocked": self.blocked,
+            "blocked_reason": self.blocked_reason,
+            "would_send": [] if self.blocked else list(self.citations),
+        }
+
+    def render(self) -> str:
+        destination = (
+            "blocked -- nothing leaves the device"
+            if self.blocked else
+            f"citation strings sent to {self.resolver_name or 'the configured resolver'}")
+        lines = [
+            f"Citation lookup preview -- resolver: {self.resolver_name or '(none)'}",
+            f"Matter ceiling: {self.ceiling or '(unspecified)'} | Destination: {destination}",
+            f"Citations ({len(self.citations)}):",
+        ]
+        lines += [f"  - {name}" for name in self.citations] or ["  - (none)"]
+        if self.blocked:
+            lines.append(f"Blocked: {self.blocked_reason}")
+        return "\n".join(lines)
+
+    __str__ = render
+
+
+def build_lookup_preview(citations: Iterable[Citation | str], *,
+                         ceiling: str | None,
+                         resolver_name: str = "") -> CitationLookupPreview:
+    """Build the lookup preview for *citations* at *ceiling* (no lookup runs)."""
+    names = tuple(dict.fromkeys(_display(c) for c in citations))
+    return CitationLookupPreview(
+        citations=names, resolver_name=resolver_name,
+        ceiling=str(ceiling or "").strip().upper(),
+        blocked_reason=lookup_block_reason(ceiling))
+
+
+class CeilingGuardedResolver:
+    """A resolver wrapper that enforces a matter's privacy ceiling.
+
+    At a blocked ceiling, ``verify`` returns ``unverified`` with the
+    block reason and the wrapped resolver is never called -- zero network
+    calls, by construction, which the tests prove with a counting
+    resolver. At an allowed ceiling every call passes through unchanged.
+    """
+
+    name: str
+
+    def __init__(self, inner: CitationResolver, ceiling: str | None):
+        self.inner = inner
+        self.ceiling = str(ceiling or "").strip().upper()
+        self.name = getattr(inner, "name", "resolver")
+
+    @property
+    def has_token(self) -> bool:
+        return bool(getattr(self.inner, "has_token", False))
+
+    def preview(self, citations: Iterable[Citation | str]) -> CitationLookupPreview:
+        return build_lookup_preview(citations, ceiling=self.ceiling, resolver_name=self.name)
+
+    def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
+        reason = lookup_block_reason(self.ceiling)
+        if reason is not None:
+            return VerificationResult(
+                citation=_display(citation), status="unverified",
+                source="none", detail=reason)
+        return self.inner.verify(citation, quote=quote)
+
+
+def guard_resolver(resolver: CitationResolver | None,
+                   ceiling: str | None) -> CitationResolver | None:
+    """Wrap *resolver* in the ceiling guard; ``None`` stays ``None``."""
+    if resolver is None:
+        return None
+    return CeilingGuardedResolver(resolver, ceiling)
+
+
+# ---------------------------------------------------------------------------
 # Recorded human attestation (for citation classes no resolver covers)
 # ---------------------------------------------------------------------------
 
-#: Citation classes a resolver cannot cover, so a recorded human
-#: attestation is the only check available: statutes (no statute resolver
-#: yet), and Westlaw, Lexis, and public-domain citations.
+#: Citation classes a recorded human attestation may cover: Westlaw,
+#: Lexis, and public-domain citations, which no resolver here covers, and
+#: statutes -- govinfo now resolves statutes, and attestation remains the
+#: fallback for a statute that could not be looked up (for example on a
+#: LOCAL_ONLY matter, where the lookup is blocked).
 ATTESTATION_CLASSES = ("statute", "westlaw", "lexis", "public_domain")
 
 
@@ -1016,14 +1445,20 @@ __all__ = [
     "ATTESTATION_CLASSES", "BLOCKING_STATUSES", "CHECKED_STATUSES", "CITE_RE",
     "COURTLISTENER_BASE_URL",
     "COURTLISTENER_TOKEN_ENV", "Citation", "CitationAttestation", "CitationGateError",
-    "CitationResolver", "CourtListenerClient", "FORMATTER_LIMITS",
-    "FixtureResolver", "GateResult", "HISTORY_DISCLAIMER", "OfflineResolver",
-    "REPORTERS", "STATUSES", "VerificationResult", "VerifyAllResult",
-    "assert_verify_all", "attestation_class", "case_names_match", "extract",
+    "CitationLookupPreview", "CitationResolver", "CeilingGuardedResolver",
+    "CourtListenerClient", "FORMATTER_LIMITS",
+    "FixtureResolver", "GateResult", "GOVINFO_API_KEY_ENV", "GOVINFO_BASE_URL",
+    "GOVINFO_LINK_BASE_URL", "GovInfoClient", "HISTORY_DISCLAIMER",
+    "LOOKUP_ALLOWED_CEILINGS", "OfflineResolver",
+    "REPORTERS", "ResolverRouter", "STATUSES", "VerificationResult", "VerifyAllResult",
+    "assert_verify_all", "attestation_class", "build_lookup_preview",
+    "case_names_match", "extract",
     "extract_all", "extract_citations",
-    "format_all", "format_bluebook", "format_citation", "load_attestations",
-    "normalize_reporter",
-    "parse_citation", "parse_courtlistener_lookup", "record_attestation",
+    "format_all", "format_bluebook", "format_citation", "govinfo_package_id",
+    "govinfo_section_root", "guard_resolver", "load_attestations",
+    "lookup_block_reason", "normalize_reporter",
+    "parse_citation", "parse_courtlistener_lookup", "parse_govinfo_package_summary",
+    "record_attestation",
     "verify_all",
     "verify_all_gate", "verify_citation",
 ]
