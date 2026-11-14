@@ -70,9 +70,115 @@ def test_cite_check_runs_resolver_when_token_is_configured(monkeypatch, capsys):
 
     monkeypatch.setattr(citations_module, "CourtListenerClient", FakeClient)
     payload = _run(capsys)
-    assert payload["resolver"] == "courtlistener"
+    # The default resolver is now the router pairing CourtListener (cases)
+    # with govinfo (statutes); the case citation still resolves through
+    # the CourtListener side.
+    assert payload["resolver"] == "courtlistener+govinfo"
     assert payload["citations"][0]["status"] == "exists"
     assert payload["verify_all_gate"]["allowed"] is True
+
+
+class _CountingResolver:
+    name = "counting"
+
+    def __init__(self):
+        self.calls = 0
+
+    def verify(self, citation, quote=None):
+        self.calls += 1
+        return VerificationResult(
+            citation="678 F. Supp. 3d 443", status="exists", source=self.name)
+
+
+def test_cite_check_local_only_makes_zero_resolver_calls(monkeypatch, capsys):
+    _clear_token_env(monkeypatch)
+    resolver = _CountingResolver()
+    assert cli.main(["cite-check", DOC, "--privacy-ceiling", "LOCAL_ONLY"],
+                    cite_resolver=resolver) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert resolver.calls == 0
+    assert payload["citations"][0]["status"] == "unverified"
+    assert payload["verify_all_gate"]["allowed"] is False
+    assert payload["privacy_ceiling"] == "LOCAL_ONLY"
+    preview = payload["lookup_preview"]
+    assert preview["blocked"] is True
+    assert preview["would_send"] == []
+    assert preview["citations"] == ["678 F. Supp. 3d 443"]
+    assert "LOCAL_ONLY" in payload["note"]
+
+
+def test_cite_check_standard_ceiling_runs_resolver_and_previews_send(monkeypatch, capsys):
+    _clear_token_env(monkeypatch)
+    resolver = _CountingResolver()
+    assert cli.main(["cite-check", DOC, "--privacy-ceiling", "STANDARD"],
+                    cite_resolver=resolver) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert resolver.calls == 1
+    assert payload["citations"][0]["status"] == "exists"
+    assert payload["lookup_preview"]["blocked"] is False
+    assert payload["lookup_preview"]["would_send"] == ["678 F. Supp. 3d 443"]
+
+
+def test_default_resolver_pairs_govinfo_for_statutes(monkeypatch):
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("COURTLISTENER_API_TOKEN", "test-token")
+    router = cli._default_cite_resolver()
+    assert router is not None
+    assert router.name == "courtlistener+govinfo"
+    assert router.statute_resolver is not None
+    assert router.statute_resolver.name == "govinfo"
+
+
+# --- `legal cite-attest` ------------------------------------------------------
+
+from hermes_legal import db as db_module  # noqa: E402
+from hermes_legal.citations import load_attestations  # noqa: E402
+
+
+def test_cite_attest_records_who_when_and_source(tmp_path, capsys):
+    conn = db_module.connect(tmp_path / "legal.db")
+    rc = cli.main(
+        ["cite-attest", "42 U.S.C. § 1983", "--by", "catduck",
+         "--source", "United States Code (govinfo)"],
+        attest_conn=conn)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["citation"] == "42 U.S.C. § 1983"
+    assert payload["citation_class"] == "statute"
+    assert payload["attested_by"] == "catduck"
+    assert payload["source"] == "United States Code (govinfo)"
+    assert payload["attested_at"]  # the store recorded when
+    saved = load_attestations(conn)["42 U.S.C. § 1983"]
+    assert saved.attested_by == "catduck"
+    assert saved.source == "United States Code (govinfo)"
+
+
+def test_cite_attest_records_westlaw_citation(tmp_path, capsys):
+    conn = db_module.connect(tmp_path / "legal.db")
+    rc = cli.main(
+        ["cite-attest", "2019 WL 4639462", "--by", "catduck", "--source", "Westlaw"],
+        attest_conn=conn)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["citation_class"] == "westlaw"
+
+
+def test_cite_attest_rejects_ordinary_case_citation(tmp_path, capsys):
+    conn = db_module.connect(tmp_path / "legal.db")
+    rc = cli.main(
+        ["cite-attest", "678 F. Supp. 3d 443", "--by", "catduck", "--source", "Westlaw"],
+        attest_conn=conn)
+    assert rc == 2
+    assert "error" in capsys.readouterr().err
+    assert load_attestations(conn) == {}
+
+
+def test_cite_attest_requires_who_and_source(tmp_path):
+    conn = db_module.connect(tmp_path / "legal.db")
+    rc = cli.main(
+        ["cite-attest", "42 U.S.C. § 1983", "--by", "  ", "--source", "Westlaw"],
+        attest_conn=conn)
+    assert rc == 2
 
 
 def test_cite_check_ambiguous_resolver_result_blocks(monkeypatch, capsys):
