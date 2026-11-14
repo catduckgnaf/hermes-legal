@@ -7,13 +7,16 @@ read-only by default, and writes as pending actions that a named
 human must approve. All HTTP goes through an injectable transport.
 """
 from .base import (
+    ApprovalRecord,
     ApprovalRequired,
     BaseConnector,
     ChainCredentialStore,
     ConnectorDisabled,
     CredentialStore,
+    CtypesWin32CredBackend,
     DataFlowLabel,
     DoctorResult,
+    DurablePendingActionStore,
     EnvCredentialStore,
     FakeTransport,
     KeychainCredentialStore,
@@ -28,14 +31,26 @@ from .clio import CLIO_BASE, ClioConnector, clio_oauth
 from .docusign import (
     DOCUSIGN_DEMO_BASE,
     OPEN_ALTERNATIVES,
+    SELF_HOSTED_PROVIDERS,
+    DocuSignAccount,
     DocuSignConnector,
     docusign_oauth,
 )
-from .oauth import OAuthConfig, TokenSet
+from .oauth import (
+    OAuthClient,
+    OAuthConfig,
+    OAuthError,
+    TokenSet,
+    code_challenge_s256,
+    generate_code_verifier,
+)
 from .pacer import (
+    PACER_AUTH_URL,
+    PACER_CASE_LOCATOR_BASE,
     CostEstimate,
     CourtListenerConnector,
     LookupResult,
+    PacerAuthError,
     PacerConnector,
     RecapCheckRequired,
 )
@@ -43,13 +58,18 @@ from .pacer import (
 ALL_CONNECTORS = (ClioConnector, DocuSignConnector, CourtListenerConnector, PacerConnector)
 
 __all__ = [
-    "ALL_CONNECTORS", "ApprovalRequired", "BaseConnector", "CLIO_BASE",
+    "ALL_CONNECTORS", "ApprovalRecord", "ApprovalRequired", "BaseConnector", "CLIO_BASE",
     "ChainCredentialStore", "ClioConnector", "ConnectorDisabled", "CostEstimate",
-    "CourtListenerConnector", "CredentialStore", "DataFlowLabel", "DOCUSIGN_DEMO_BASE",
-    "DoctorResult", "DocuSignConnector", "EnvCredentialStore", "FakeTransport",
-    "KeychainCredentialStore", "LookupResult", "MemoryCredentialStore", "OAuthConfig",
-    "OPEN_ALTERNATIVES", "PacerConnector", "PendingAction", "RecapCheckRequired",
+    "CourtListenerConnector", "CredentialStore", "CtypesWin32CredBackend", "DataFlowLabel",
+    "DOCUSIGN_DEMO_BASE", "DocuSignAccount",
+    "DoctorResult", "DocuSignConnector", "DurablePendingActionStore", "EnvCredentialStore",
+    "FakeTransport",
+    "KeychainCredentialStore", "LookupResult", "MemoryCredentialStore", "OAuthClient",
+    "OAuthConfig", "OAuthError",
+    "OPEN_ALTERNATIVES", "PACER_AUTH_URL", "PACER_CASE_LOCATOR_BASE", "PacerAuthError",
+    "PacerConnector", "PendingAction", "RecapCheckRequired", "SELF_HOSTED_PROVIDERS",
     "TokenSet", "Transport",
-    "TransportResponse", "UrllibTransport", "clio_oauth", "default_credential_store",
-    "docusign_oauth",
+    "TransportResponse", "UrllibTransport", "clio_oauth", "code_challenge_s256",
+    "default_credential_store",
+    "docusign_oauth", "generate_code_verifier",
 ]

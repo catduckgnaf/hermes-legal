@@ -83,26 +83,30 @@ class ClioConnector(BaseConnector):
         return self._list("bills.json", matter_id=matter_id, **params)
 
     # -- writes: pending actions only -----------------------------------------
-    def create_matter(self, description: str, **fields):
+    def create_matter(self, description: str, *, matter_id=None, **fields):
         payload = {"data": {"description": description, **fields}}
 
         def execute(action):
+            self.require_send_allowed(action)
             resp = self.transport.request("POST", f"{self.base_url}/matters.json",
-                                          headers=self.bearer_headers(), json_body=action.payload)
+                                          headers=self.send_headers(action), json_body=action.payload)
             if not resp.ok:
                 raise RuntimeError(f"clio: create matter failed with HTTP {resp.status}")
             return resp.data
 
-        return self.queue_write("create_matter", f"Create Clio matter: {description}", payload, execute)
+        return self.queue_write("create_matter", f"Create Clio matter: {description}",
+                                payload, execute, matter_id=matter_id)
 
-    def create_contact(self, first_name: str, last_name: str, **fields):
+    def create_contact(self, first_name: str, last_name: str, *, matter_id=None, **fields):
         payload = {"data": {"first_name": first_name, "last_name": last_name, "type": "Person", **fields}}
 
         def execute(action):
+            self.require_send_allowed(action)
             resp = self.transport.request("POST", f"{self.base_url}/contacts.json",
-                                          headers=self.bearer_headers(), json_body=action.payload)
+                                          headers=self.send_headers(action), json_body=action.payload)
             if not resp.ok:
                 raise RuntimeError(f"clio: create contact failed with HTTP {resp.status}")
             return resp.data
 
-        return self.queue_write("create_contact", f"Create Clio contact: {first_name} {last_name}", payload, execute)
+        return self.queue_write("create_contact", f"Create Clio contact: {first_name} {last_name}",
+                                payload, execute, matter_id=matter_id)
