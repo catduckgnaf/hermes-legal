@@ -276,3 +276,151 @@ def test_invalid_regex_is_a_parse_error_not_a_rule_that_never_fires():
     text = "id: x\n\n## Rules\n\n### r\nkind: forbidden\npatterns: /perpetu(al/\n"
     with pytest.raises(PlaybookError, match="invalid pattern"):
         parse_playbook(text)
+
+
+# ---------------------------------------------------------------------------
+# Negation-aware matching: a negated mention does not satisfy a rule
+# ---------------------------------------------------------------------------
+
+def _indemnification_playbook():
+    return parse_playbook(
+        "id: indemnity\nname: Indemnity\n\n## Rules\n\n"
+        "### require-indemnification\n"
+        "title: Indemnification is required\nkind: required\nseverity: high\n"
+        "topic: indemnification\npatterns: indemnification; indemnify\n"
+        "rationale: The agreement must allocate third-party claim risk.\n"
+        "fallback: Provider will indemnify Client against third-party claims.\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "contract_body",
+    [
+        "There is no indemnification under this Agreement.",
+        "The Provider shall not indemnify the Client for any claim.",
+        "In no event will the Provider indemnify the Client.",
+        "This Agreement provides no indemnify protection to either party.",
+        "Indemnification is not provided under this Agreement.",
+    ],
+)
+def test_negated_indemnification_does_not_satisfy_required_clause(contract_body):
+    contract = f"## 1. Indemnification\n{contract_body}\n"
+    result = review_contract(contract, _indemnification_playbook())
+    hits = [f for f in result.findings if f.rule_id == "require-indemnification"]
+    assert len(hits) == 1
+    assert hits[0].status == "missing"
+    # The finding is tied to the clause carrying the negated mention and
+    # says plainly that the negated mention does not satisfy the rule.
+    assert hits[0].clause_index is not None
+    assert "Indemnification" in hits[0].clause_heading
+    assert "negat" in hits[0].message.lower()
+    assert hits[0].excerpt
+
+
+@pytest.mark.parametrize(
+    "contract_body",
+    [
+        "The Provider will indemnify the Client against third-party claims.",
+        "Indemnification: the Provider indemnifies the Client for claims.",
+        # A negated sentence followed by a positive sentence in the same
+        # clause: the positive mention satisfies the rule.
+        "There is no indemnification for indirect damages. "
+        "The Provider will indemnify the Client for direct claims.",
+    ],
+)
+def test_positive_indemnification_satisfies_required_clause(contract_body):
+    contract = f"## 1. Indemnification\n{contract_body}\n"
+    result = review_contract(contract, _indemnification_playbook())
+    assert [f for f in result.findings if f.rule_id == "require-indemnification"] == []
+
+
+def test_negated_must_contain_element_is_incomplete():
+    pb = parse_playbook(
+        "id: conf\nname: Conf\n\n## Rules\n\n"
+        "### require-definition\n"
+        "title: Definition is required\nkind: required\nseverity: high\n"
+        "topic: confidentiality\npatterns: confidential information\n"
+        "must_contain: written; oral\n"
+        "rationale: The definition must cover written and oral disclosures.\n"
+        "fallback: Confidential Information covers written and oral disclosures.\n"
+    )
+    contract = (
+        "## 1. Confidentiality\n"
+        "Confidential Information means written information only; "
+        "it does not cover oral disclosures.\n"
+    )
+    result = review_contract(contract, pb)
+    hits = [f for f in result.findings if f.rule_id == "require-definition"]
+    assert len(hits) == 1
+    assert hits[0].status == "incomplete"
+    assert "oral" in hits[0].message
+
+
+def test_negated_forbidden_language_does_not_fire():
+    pb = parse_playbook(
+        "id: perp\nname: Perp\n\n## Rules\n\n"
+        "### forbid-perpetual\n"
+        "title: Confidentiality must not be perpetual\nkind: forbidden\n"
+        "severity: high\ntopic: confidentiality\npatterns: perpetual\n"
+        "rationale: Perpetual duties are outside the approved position.\n"
+        "fallback: Duties survive for three years.\n"
+    )
+    negated = review_contract(
+        "## 1. Confidentiality\nConfidentiality shall not be perpetual; "
+        "the duty survives for three years.\n",
+        pb,
+    )
+    assert negated.findings == ()
+    positive = review_contract(
+        "## 1. Confidentiality\nThe confidentiality duty is perpetual.\n", pb
+    )
+    assert len(positive.findings) == 1
+    assert positive.findings[0].status == "forbidden"
+
+
+def test_negated_preferred_position_is_a_deviation_not_a_match():
+    pb = parse_playbook(
+        "id: gov2\nname: Gov2\n\n## Rules\n\n"
+        "### gov-position\ntitle: Governing law\nkind: fallback\nseverity: medium\n"
+        "topic: governing law\npatterns: governed by; governing law\n"
+        "preferred: Delaware\nacceptable: New York\n"
+        "rationale: Delaware is preferred.\nfallback: Governed by Delaware law.\n"
+    )
+    contract = (
+        "## 1. Governing Law\n"
+        "This Agreement is not governed by the laws of the State of Delaware.\n"
+    )
+    result = review_contract(contract, pb)
+    hits = [f for f in result.findings if f.rule_id == "gov-position"]
+    assert len(hits) == 1
+    assert hits[0].status == "deviation"
+
+
+# ---------------------------------------------------------------------------
+# Fallback-position surfacing in findings
+# ---------------------------------------------------------------------------
+
+def test_fallback_acceptable_finding_names_preferred_miss_and_matched_fallback():
+    contract = (
+        "## 1. Governing Law\n"
+        "This Agreement is governed by the laws of the State of New York.\n"
+    )
+    result = legal_playbook_review(contract, load_playbook(PLAYBOOKS_DIR / "nda.md"))
+    hits = [f for f in result.findings if f.rule_id == "governing-law-position"]
+    assert len(hits) == 1
+    assert hits[0].status == "fallback_acceptable"
+    # The finding says the preferred position was missed, names the
+    # fallback term that matched, and calls it a fallback position.
+    assert "Delaware" in hits[0].message
+    assert "New York" in hits[0].message
+    assert "fallback" in hits[0].message.lower()
+    assert result.to_dict()["summary"]["fallback_acceptable"] == 1
+
+
+def test_deviation_finding_says_neither_preferred_nor_acceptable_matched():
+    result = legal_playbook_review(demo_text(), load_playbook(PLAYBOOKS_DIR / "nda.md"))
+    hits = [f for f in result.findings if f.rule_id == "governing-law-position"]
+    assert len(hits) == 1
+    assert hits[0].status == "deviation"
+    assert "Delaware" in hits[0].message
+    assert "neither" in hits[0].message.lower() or "no preferred" in hits[0].message.lower()
