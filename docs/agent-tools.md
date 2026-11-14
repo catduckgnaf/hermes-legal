@@ -1,6 +1,6 @@
 # Agent tools
 
-The `legal` CLI, the MCP server and the Hermes plugin all call the same dispatcher, so they follow the same rules.
+The `legal` CLI and the MCP server both call the same dispatcher, so they follow the same rules.
 
 ## Run the MCP server
 
@@ -34,6 +34,8 @@ uv run legal actions show 1
 uv run legal actions approve 1 --by "A. Lawyer"
 uv run legal actions reject 1 --by "A. Lawyer"
 ```
+
+The `legal serve` dashboard can decide actions too, with the same rules: a named person, the action id typed to confirm, and a server started from an interactive terminal. A dashboard started by a script, service or agent (no terminal) shows the queue but refuses decisions.
 
 An action runs at most once. If it fails, propose it again. MCP clients cannot see write tools until a person runs `legal mcp allow-writes on`. Scheduled and unattended runs cannot propose writes at all.
 

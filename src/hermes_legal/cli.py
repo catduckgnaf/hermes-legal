@@ -82,22 +82,85 @@ def _run_ask(args):
     return 0
 
 def _default_cite_resolver():
-    """The resolver `legal cite-check` runs by default: a CourtListener
-    client when a token is configured in the environment, else None, in
-    which case cite-check stays fully offline and reports every citation
-    as unverified."""
+    """The resolver `legal cite-check` runs by default: a router pairing
+    a CourtListener client (case citations) with a govinfo client
+    (U.S.C. statutes) when a CourtListener token or a govinfo API key is
+    configured in the environment, else None, in which case cite-check
+    stays fully offline and reports every citation as unverified. The
+    govinfo link service needs no key, but it is only wired in alongside
+    a configured credential so the no-token path stays exactly as
+    offline as before."""
+    from .citations import GovInfoClient, ResolverRouter
     from .citations import CourtListenerClient
     client = CourtListenerClient()
-    return client if client.has_token else None
+    govinfo = GovInfoClient()
+    if not client.has_token and not govinfo.has_api_key:
+        return None
+    return ResolverRouter(
+        case_resolver=client if client.has_token else None,
+        statute_resolver=govinfo)
 
-def main(argv=None, *, cite_resolver=None):
+def _cite_check_ceiling(args):
+    """(ceiling, matter_id, error) for cite-check: an explicit ceiling
+    wins; a matter id reads the matter's stored ceiling from the
+    existing database without creating one."""
+    if getattr(args, "privacy_ceiling", None):
+        return args.privacy_ceiling, getattr(args, "matter_id", None), None
+    matter_id = getattr(args, "matter_id", None)
+    if matter_id is None:
+        return None, None, None
+    if not db.default_path().is_file():
+        return None, matter_id, "no hermes-legal database exists yet, so the matter ceiling cannot be read"
+    conn = db.connect_readonly(db.default_path())
+    try:
+        row = conn.execute("SELECT privacy_ceiling FROM matters WHERE id=?", (matter_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None, matter_id, f"no such matter: {matter_id}"
+    return row[0], matter_id, None
+
+def _run_cite_attest(args, attest_conn=None):
+    """`legal cite-attest`: record a human attestation (who, when, what
+    source) for a citation a resolver cannot cover, through the existing
+    attestation store. The timestamp is recorded by the store."""
+    from .citations import attestation_class, record_attestation
+    own_conn = attest_conn is None
+    conn = attest_conn if attest_conn is not None else db.connect()
+    try:
+        record = record_attestation(
+            conn, args.citation, attested_by=args.by, source=args.source,
+            matter_id=args.matter_id)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr); return 2
+    finally:
+        if own_conn:
+            conn.close()
+    print(json.dumps({
+        "citation": record.citation,
+        "citation_class": attestation_class(record.citation),
+        "attested_by": record.attested_by,
+        "attested_at": record.attested_at,
+        "source": record.source,
+        "matter_id": record.matter_id,
+        "note": "Recorded. This attestation lets the Verify-All gate accept this citation; it never applies to an ordinary case citation and never overrides a resolver not_found.",
+    }, indent=2))
+    return 0
+
+def main(argv=None, *, cite_resolver=None, attest_conn=None):
     ap = argparse.ArgumentParser(prog="legal", description="Hermes Legal: local-first legal work")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
     sub.add_parser("doctor", help="check every integration, offline")
     sub.add_parser("status", help="matters, documents, deadlines, tools")
     sub.add_parser("demo", help="build the synthetic demo matter")
-    sub.add_parser("serve", help="serve the local dashboard").add_argument("--port", type=int, default=8770)
+    serve_cmd = sub.add_parser("serve", help="serve the local dashboard")
+    serve_cmd.add_argument("--port", type=int, default=8770)
+    serve_cmd.add_argument("--host", default="127.0.0.1", help="bind address (loopback only by default)")
+    serve_cmd.add_argument("--allow-non-loopback", action="store_true",
+                           help="allow a non-loopback bind; prints a loud warning, the per-launch token is then the only access control")
+    serve_cmd.add_argument("--unattended", action="store_true",
+                           help="refuse write proposals and approval decisions on this server")
     m = sub.add_parser("matter", help="open, list, and inspect matter workspaces")
     msub = m.add_subparsers(dest="sub")
     mopen = msub.add_parser("open", help="open a file or folder as a matter")
@@ -113,6 +176,15 @@ def main(argv=None, *, cite_resolver=None):
     mdocs.add_argument("matter_id", type=int)
     mdocs.add_argument("--json", action="store_true")
     c = sub.add_parser("cite-check"); c.add_argument("text")
+    c.add_argument("--privacy-ceiling", choices=["LOCAL_ONLY", "ZERO_RETENTION", "STANDARD"], default=None,
+                   help="matter privacy ceiling to enforce: on LOCAL_ONLY no citation lookup leaves the device")
+    c.add_argument("--matter-id", type=int, default=None,
+                   help="read the privacy ceiling and recorded attestations for this matter from the database")
+    ca = sub.add_parser("cite-attest", help="record a human attestation for a statute, Westlaw, Lexis, or public-domain citation (who checked it, from what source)")
+    ca.add_argument("citation", help="the citation as written, e.g. '42 U.S.C. § 1983' or '2019 WL 4639462'")
+    ca.add_argument("--by", required=True, help="who checked the citation")
+    ca.add_argument("--source", required=True, help="the source it was checked in")
+    ca.add_argument("--matter-id", type=int, default=None)
     dc = sub.add_parser("doc-compare", help="deterministic paragraph-level DOCX compare")
     dc.add_argument("original"); dc.add_argument("revised"); dc.add_argument("--json", action="store_true")
     dr = sub.add_parser("doc-redline", help="build a DOCX redline with real w:ins / w:del track changes")
@@ -120,6 +192,12 @@ def main(argv=None, *, cite_resolver=None):
     bp = sub.add_parser("bates-plan", help="plan Bates labels for a page count (plan only; renders nothing)")
     bp.add_argument("--pages", type=int, required=True); bp.add_argument("--prefix", default="")
     bp.add_argument("--start", type=int, default=1); bp.add_argument("--digits", type=int, default=6)
+    bs = sub.add_parser("bates-stamp", help="stamp Bates labels onto every page of a real PDF and write a stamped PDF")
+    bs.add_argument("input"); bs.add_argument("-o", "--output", required=True)
+    bs.add_argument("--prefix", default=""); bs.add_argument("--start", type=int, default=1)
+    bs.add_argument("--digits", type=int, default=6)
+    rd = sub.add_parser("redact", help="true redaction: rebuild a PDF from its redacted text layer only, with metadata cleared, and verify the rebuilt bytes")
+    rd.add_argument("input"); rd.add_argument("phrases", nargs="+"); rd.add_argument("-o", "--output", required=True)
     rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
     rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
@@ -137,6 +215,11 @@ def main(argv=None, *, cite_resolver=None):
     mcpsub.add_parser("allow-writes").add_argument("state", choices=["on", "off"])
     ask = sub.add_parser("ask", help="ask about a matter using only a model on this computer")
     ask.add_argument("matter_id", type=int); ask.add_argument("question"); ask.add_argument("--model", default=None)
+    ai_log_cmd = sub.add_parser("ai-log", help="inspect the per-matter AI-use log")
+    ai_log_sub = ai_log_cmd.add_subparsers(dest="ai_log_cmd", required=True)
+    ai_export = ai_log_sub.add_parser("export", help="export one matter's AI log as JSON or CSV")
+    ai_export.add_argument("matter_id", type=int)
+    ai_export.add_argument("--format", choices=["json", "csv"], default="json")
     p = sub.add_parser("models", help="privacy tiers, provider catalog, and local models")
     p.add_argument("--json", action="store_true")
     p.add_argument("--ceiling", choices=["LOCAL_ONLY", "ZERO_RETENTION", "STANDARD"], default=None,
@@ -234,9 +317,13 @@ def main(argv=None, *, cite_resolver=None):
             print(row)
         return 0
     if args.cmd == "serve":
-        print("Dashboard is a v1 build item; the CLI, plugin and MCP tools work today.")
-        print(f"Would bind 127.0.0.1:{args.port} only (local access mode).")
-        return 0
+        from . import serve as dashboard
+        try:
+            return dashboard.serve(host=args.host, port=args.port,
+                                   allow_non_loopback=args.allow_non_loopback,
+                                   unattended=args.unattended)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr); return 2
     if args.cmd == "doc-compare":
         import pathlib
         from .docx_edit import compare_docx
@@ -267,6 +354,55 @@ def main(argv=None, *, cite_resolver=None):
         print(json.dumps([s.as_dict() for s in stamps], indent=2))
         print("plan only: no PDF was stamped by this command")
         return 0
+    if args.cmd == "bates-stamp":
+        import pathlib
+        from . import pdf_tools
+        from .pdf_tools import BatesConfig, plan_bates_stamps, stamp_pdf
+        data = pathlib.Path(args.input).read_bytes()
+        if not pdf_tools.is_pdf_bytes(data):
+            print("error: no PDF was stamped: the input is not a PDF", file=sys.stderr); return 2
+        config = BatesConfig(prefix=args.prefix, start=args.start, digits=args.digits)
+        try:
+            stamped = stamp_pdf(data, config)
+        except RuntimeError as exc:
+            print(f"error: no PDF was stamped: {exc}", file=sys.stderr); return 2
+        plan = plan_bates_stamps(pdf_tools.extract_text_layer(data).page_count, config)
+        try:
+            with pathlib.Path(args.output).open("xb") as handle:
+                handle.write(stamped)
+        except FileExistsError:
+            print(f"error: {args.output} already exists; stamping never overwrites a file", file=sys.stderr)
+            return 2
+        print(f"stamped PDF written to {args.output}: {len(plan)} pages, "
+              f"labels {plan[0].label} to {plan[-1].label}" if plan else
+              f"stamped PDF written to {args.output}: 0 pages")
+        return 0
+    if args.cmd == "redact":
+        import pathlib
+        from . import pdf_tools
+        data = pathlib.Path(args.input).read_bytes()
+        if not pdf_tools.is_pdf_bytes(data):
+            print("error: no PDF was redacted: the input is not a PDF", file=sys.stderr); return 2
+        try:
+            result = pdf_tools.redact_pdf(data, list(args.phrases))
+        except RuntimeError as exc:
+            print(f"error: no PDF was redacted: {exc}", file=sys.stderr); return 2
+        for line in pdf_tools.REDACTION_COVERAGE:
+            print(line)
+        if not result.verification.passed:
+            print("error: redaction verification failed on the rebuilt PDF; no output file was written",
+                  file=sys.stderr)
+            print(json.dumps(result.as_dict(), indent=2))
+            return 1
+        try:
+            with pathlib.Path(args.output).open("xb") as handle:
+                handle.write(result.output_bytes)
+        except FileExistsError:
+            print(f"error: {args.output} already exists; redaction never overwrites a file", file=sys.stderr)
+            return 2
+        print(f"redacted PDF written to {args.output}: {result.plan.as_dict()['hit_count']} occurrence(s) "
+              f"removed from pages {result.plan.pages_affected}; verification passed on the rebuilt bytes")
+        return 0
     if args.cmd == "redact-verify":
         import pathlib
         from . import pdf_tools
@@ -288,11 +424,28 @@ def main(argv=None, *, cite_resolver=None):
               "a text file passing proves nothing about any PDF")
         print(json.dumps(result.as_dict(), indent=2))
         return 0 if result.passed else 1
+    if args.cmd == "cite-attest":
+        return _run_cite_attest(args, attest_conn=attest_conn)
     if args.cmd == "cite-check":
-        from .citations import BLOCKING_STATUSES, HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
+        from .citations import BLOCKING_STATUSES, HISTORY_DISCLAIMER, build_lookup_preview, extract_citations, format_citation, guard_resolver, load_attestations, verify_all_gate
+        ceiling, matter_id, ceiling_error = _cite_check_ceiling(args)
+        if ceiling_error:
+            print(f"error: {ceiling_error}", file=sys.stderr); return 2
         resolver = cite_resolver if cite_resolver is not None else _default_cite_resolver()
+        if ceiling is not None:
+            resolver = guard_resolver(resolver, ceiling)
         found = extract_citations(args.text, include_unrecognized=True)
-        gate = verify_all_gate(args.text, resolver=resolver)
+        attestations = {}
+        if matter_id is not None and db.default_path().is_file():
+            conn = db.connect_readonly(db.default_path())
+            try:
+                attestations = load_attestations(conn, matter_id)
+            finally:
+                conn.close()
+        gate = verify_all_gate(args.text, resolver=resolver, attestations=attestations)
+        lookup_preview = build_lookup_preview(
+            found, ceiling=ceiling,
+            resolver_name=getattr(resolver, "name", "") if resolver is not None else "") if ceiling is not None else None
         results = {r.citation: r for r in gate.results}
         entries = []
         for c in found:
@@ -310,7 +463,9 @@ def main(argv=None, *, cite_resolver=None):
             overall = next((s for s in statuses if s in BLOCKING_STATUSES), statuses[0])
         else:
             overall = "unverified"
-        if resolver is None:
+        if lookup_preview is not None and lookup_preview.blocked:
+            note = lookup_preview.blocked_reason
+        elif resolver is None:
             note = "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model."
         else:
             note = (f"Citation statuses are from the {getattr(resolver, 'name', 'resolver')} resolver; "
@@ -322,6 +477,8 @@ def main(argv=None, *, cite_resolver=None):
             "note": note,
             "history": "history_unknown",
             "history_note": HISTORY_DISCLAIMER,
+            "privacy_ceiling": ceiling,
+            "lookup_preview": lookup_preview.to_dict() if lookup_preview is not None else None,
             "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},
         }, indent=2)); return 0
     if args.cmd == "tool":
@@ -334,6 +491,21 @@ def main(argv=None, *, cite_resolver=None):
             return mcp_server.serve()
         mcp_server.set_writes_allowed(db.connect(), args.state == "on")
         print(f"MCP write proposals are {args.state}. Every proposal still needs a person to approve it.")
+        return 0
+    if args.cmd == "ai-log" and args.ai_log_cmd == "export":
+        conn = db.connect()
+        try:
+            if matters.get_matter(conn, args.matter_id) is None:
+                print(f"error: no such matter: {args.matter_id}", file=sys.stderr); return 2
+            exported = providers.export_ai_log(conn, args.matter_id, format=args.format)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr); return 2
+        finally:
+            conn.close()
+        if args.format == "csv":
+            sys.stdout.write(exported)
+        else:
+            print(exported)
         return 0
     if args.cmd == "ask":
         return _run_ask(args)

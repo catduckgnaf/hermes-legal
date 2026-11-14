@@ -1,9 +1,14 @@
 name: Desktop
 
-# Manually triggered only. Building the Tauri shell is slow and needs
-# platform toolchains that the normal CI does not install, and release
-# builds additionally need signing secrets. This workflow must never
-# gate a PR: it runs only when a maintainer dispatches it.
+# Two entry points:
+# - Pull requests that touch desktop/** run the client tests against
+#   the mock Hermes server and an unsigned Windows build of the Tauri
+#   app (NSIS + MSI) as a smoke check. Windows is the v1 platform;
+#   there is deliberately no Linux build job here yet.
+# - workflow_dispatch keeps the original full build: both platforms,
+#   all bundle targets, signing secrets wired in. Release builds
+#   additionally need the signing secrets; a build without them is
+#   unsigned and its artifacts are for smoke testing only.
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +16,11 @@ on:
         description: "Build as a signed release (requires the signing secrets in desktop/packaging.md)"
         type: boolean
         default: false
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
 
 permissions:
   contents: read
@@ -20,8 +30,86 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  client-tests:
+    name: client tests (mock Hermes server)
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run the desktop client tests against the mock Hermes server
+        working-directory: desktop
+        run: npm test
+
+  build-windows-pr:
+    name: build-windows (pull request)
+    if: github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # Signing material is provided only through repository secrets.
+      # Nothing is committed to this repository: no certificate, no
+      # private key, no placeholder value. When a secret is absent the
+      # build is unsigned and its artifacts are for smoke testing only;
+      # they are never published as a release. See desktop/packaging.md.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+      WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+      AZURE_TRUSTED_SIGNING_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run the desktop client tests against the mock Hermes server
+        shell: bash
+        working-directory: desktop
+        run: npm test
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Stage the Python sidecar placeholder for this target
+        shell: bash
+        run: |
+          # The real sidecar is the Python core packaged as one
+          # executable. Until that packaging lands, stage a placeholder
+          # file with the exact target-triple name Tauri expects next to
+          # bundle.externalBin, so the shell itself builds and can be
+          # smoke tested. A placeholder sidecar cannot serve the
+          # dashboard; artifacts from this step are never a release.
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          ext=""
+          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
+          mkdir -p desktop/src-tauri/binaries
+          printf 'placeholder sidecar for %s\n' "$triple" > "desktop/src-tauri/binaries/hermes-legal-sidecar-${triple}${ext}"
+          ls -la desktop/src-tauri/binaries/
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Build the Tauri app for Windows (unsigned smoke build)
+        working-directory: desktop/src-tauri
+        run: cargo tauri build --bundles nsis,msi
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-legal-desktop-windows-pr
+          path: |
+            desktop/src-tauri/target/release/bundle/**
+          if-no-files-found: error
+
   build:
     name: build (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:

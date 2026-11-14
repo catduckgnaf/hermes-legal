@@ -97,9 +97,45 @@ recorded as if it happened, and `route_and_log` routes and logs in one
 enforced step. The log is exportable per matter as JSON or CSV
 (`export_ai_log`).
 
+## What was actually sent: the sent-payload log
+
+Routing alone does not prove what went out. After a call is routed and
+its pre-send preview is approved, `log_sent_payload` records, in the
+same per-matter AI log, a hash of the exact payload sent:
+
+- `sent_sha256` — the SHA-256 of the exact payload bytes, plus
+  `sent_bytes`, the payload size in bytes;
+- `preview_sha256` — the fingerprint of the approved preview (provider,
+  tier, ceiling, model, files and per-chunk records), tying the send
+  to that specific approval;
+- per-chunk content hashes (`chunk_sha256`) and chunk identifiers, so
+  the chunks in the sent payload can be matched against the chunks the
+  preview listed. Each preview chunk record now carries the SHA-256 of
+  its full text, not only an excerpt.
+
+An auditor holding a payload and a preview can recompute both hashes
+and prove sent == approved. The check also runs before the send: if
+the chunks or model to send diverge from the approved preview,
+`log_sent_payload` and `verify_payload_matches_preview` raise
+`PrivacyViolationError` and nothing is logged or sent.
+
+On the local Ask path (`hermes_legal.local_model`), the request body
+is built once by `LocalModelClient.build_body`; the hash of those
+bytes is what is logged, and those same bytes are what
+`chat_payload` sends, refusing first if their hash does not match
+the hash tied to the preview. The older `prompt_sha256` field is kept
+in the same log action for continuity.
+
+Export note: the export function is `export_ai_log` in
+`hermes_legal.providers` (JSON and CSV). There is no `legal` CLI
+subcommand for the export yet; wiring one is remaining work for the
+CLI surface, and the function is the supported programmatic route
+until then.
+
 ## Doctor warnings
 
 `legal doctor` warns, offline, when a cloud provider's terms-checked
 date is stale (older than 90 days) and when a STANDARD-tier provider is
-selected for a LOCAL_ONLY matter. Warnings are `warn` lines: they name
+selected for a privileged matter (a LOCAL_ONLY or ZERO_RETENTION
+ceiling). Warnings are `warn` lines: they name
 the problem without failing the integration checks.
