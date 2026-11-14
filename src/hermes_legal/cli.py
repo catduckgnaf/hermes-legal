@@ -97,7 +97,13 @@ def main(argv=None, *, cite_resolver=None):
     sub.add_parser("doctor", help="check every integration, offline")
     sub.add_parser("status", help="matters, documents, deadlines, tools")
     sub.add_parser("demo", help="build the synthetic demo matter")
-    sub.add_parser("serve", help="serve the local dashboard").add_argument("--port", type=int, default=8770)
+    serve_cmd = sub.add_parser("serve", help="serve the local dashboard")
+    serve_cmd.add_argument("--port", type=int, default=8770)
+    serve_cmd.add_argument("--host", default="127.0.0.1", help="bind address (loopback only by default)")
+    serve_cmd.add_argument("--allow-non-loopback", action="store_true",
+                           help="allow a non-loopback bind; prints a loud warning, the per-launch token is then the only access control")
+    serve_cmd.add_argument("--unattended", action="store_true",
+                           help="refuse write proposals and approval decisions on this server")
     m = sub.add_parser("matter", help="open, list, and inspect matter workspaces")
     msub = m.add_subparsers(dest="sub")
     mopen = msub.add_parser("open", help="open a file or folder as a matter")
@@ -137,6 +143,11 @@ def main(argv=None, *, cite_resolver=None):
     mcpsub.add_parser("allow-writes").add_argument("state", choices=["on", "off"])
     ask = sub.add_parser("ask", help="ask about a matter using only a model on this computer")
     ask.add_argument("matter_id", type=int); ask.add_argument("question"); ask.add_argument("--model", default=None)
+    ai_log_cmd = sub.add_parser("ai-log", help="inspect the per-matter AI-use log")
+    ai_log_sub = ai_log_cmd.add_subparsers(dest="ai_log_cmd", required=True)
+    ai_export = ai_log_sub.add_parser("export", help="export one matter's AI log as JSON or CSV")
+    ai_export.add_argument("matter_id", type=int)
+    ai_export.add_argument("--format", choices=["json", "csv"], default="json")
     p = sub.add_parser("models", help="privacy tiers, provider catalog, and local models")
     p.add_argument("--json", action="store_true")
     p.add_argument("--ceiling", choices=["LOCAL_ONLY", "ZERO_RETENTION", "STANDARD"], default=None,
@@ -234,9 +245,13 @@ def main(argv=None, *, cite_resolver=None):
             print(row)
         return 0
     if args.cmd == "serve":
-        print("Dashboard is a v1 build item; the CLI, plugin and MCP tools work today.")
-        print(f"Would bind 127.0.0.1:{args.port} only (local access mode).")
-        return 0
+        from . import serve as dashboard
+        try:
+            return dashboard.serve(host=args.host, port=args.port,
+                                   allow_non_loopback=args.allow_non_loopback,
+                                   unattended=args.unattended)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr); return 2
     if args.cmd == "doc-compare":
         import pathlib
         from .docx_edit import compare_docx
@@ -334,6 +349,21 @@ def main(argv=None, *, cite_resolver=None):
             return mcp_server.serve()
         mcp_server.set_writes_allowed(db.connect(), args.state == "on")
         print(f"MCP write proposals are {args.state}. Every proposal still needs a person to approve it.")
+        return 0
+    if args.cmd == "ai-log" and args.ai_log_cmd == "export":
+        conn = db.connect()
+        try:
+            if matters.get_matter(conn, args.matter_id) is None:
+                print(f"error: no such matter: {args.matter_id}", file=sys.stderr); return 2
+            exported = providers.export_ai_log(conn, args.matter_id, format=args.format)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr); return 2
+        finally:
+            conn.close()
+        if args.format == "csv":
+            sys.stdout.write(exported)
+        else:
+            print(exported)
         return 0
     if args.cmd == "ask":
         return _run_ask(args)
