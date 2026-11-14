@@ -85,17 +85,47 @@ notes without breaking the parser.
 
 ### How each rule kind is checked
 
-- `required` — if no clause matches `patterns`, the finding status is
-  `missing`. If a clause matches but a `must_contain` element is
-  absent, the status is `incomplete` and the finding names that clause.
-- `forbidden` — every clause that matches `patterns` produces a
-  `forbidden` finding tied to that clause, with an excerpt.
+- `required` — if no clause matches `patterns` with a non-negated
+  mention in its body, the finding status is `missing`. If a clause
+  matches but a `must_contain` element is absent (or present only in
+  negated form), the status is `incomplete` and the finding names
+  that clause.
+- `forbidden` — every clause that matches `patterns` with a
+  non-negated mention produces a `forbidden` finding tied to that
+  clause, with an excerpt.
 - `fallback` — the located clause is compared with `preferred` first,
   then with `acceptable`. A preferred match produces no finding. An
   acceptable match produces a `fallback_acceptable` finding at low
-  severity. Any other text produces a `deviation` finding that carries
-  the playbook's fallback language. If no clause is located, the
-  status is `missing`.
+  severity that names the preferred position it missed and the
+  acceptable fallback term it matched. Any other text produces a
+  `deviation` finding that says it matches neither the preferred nor
+  an acceptable fallback position and carries the playbook's fallback
+  language. If no clause is located, the status is `missing`.
+
+### Negation-aware matching
+
+Matching is negation-aware, per mention and per sentence. A mention
+that is negated in its own sentence does not count as a match, so
+`no indemnification`, `shall not indemnify`, `in no event will a
+party indemnify`, and `indemnification is not provided` do not
+satisfy a required indemnification clause, do not count as a
+preferred or acceptable fallback position, and do not trigger a
+forbidden rule on their own. A required clause whose only mention is
+negated is reported `missing`, tied to the clause carrying the
+negated mention, and the finding says the mention is negated. A
+positive mention in a later sentence of the same clause still
+counts: negation in one sentence does not poison the next.
+
+Satisfaction is judged on a clause's body, not its heading, so a
+clause titled "Indemnification" whose body grants none is not
+satisfied by its title alone.
+
+This is a deliberately simple, explainable heuristic — a short list
+of negation cues (`no`, `not`, `never`, `without`, `in no event`,
+post-posed forms such as `is not provided`, and similar) inside the
+same sentence segment as the mention. It is not a full reading of
+the clause, and a human reviewer should still read a clause that a
+finding turns on.
 
 ### Clause library fields
 
