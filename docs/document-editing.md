@@ -56,43 +56,58 @@ regression test that needs no LibreOffice to run. Opening a redline in
 real Microsoft Word remains a manual release gate — Word is not
 available in the build environment, and this page does not claim it.
 
-## PDF: Bates stamping and true redaction (`hermes_legal.pdf_tools`)
+## PDF: Bates stamping and true redaction (PdfCraft, `hermes_legal.pdfcraft`)
 
+Redaction and Bates stamping run on [PdfCraft](https://github.com/storytold/pdfcraft),
+an open-source PDF engine written in Rust (MIT OR Apache-2.0). Hermes Legal
+drives its `pdfcraft-cli run` command; it does not bundle it. Install a
+PdfCraft release and put `pdfcraft-cli` on `PATH`, or set
+`HERMES_LEGAL_PDFCRAFT` to its path. On Windows the CLI ships inside the
+`windows-x64-portable.zip` release asset. `legal doctor` reports whether it
+was found. Real PDFs also need the optional `pdf` extra (`pypdf`), which is
+the independent checker below.
+
+- **Redaction.** `legal redact <input.pdf> <phrase>... -o <output.pdf>`
+  finds each phrase with PdfCraft, marks and applies the redactions, removes
+  hidden information (metadata, attachments, comments, form fields, hidden
+  text and layers, bookmarks, links and scripts, private data) and rewrites
+  the whole file, so no earlier revision survives. PdfCraft cuts the marked
+  glyphs out of the page content and keeps the rest of each line in place,
+  and clears the covered pixels of images, so the document keeps its
+  layout, fonts and graphics.
+  - Nothing is trusted on PdfCraft's word. The output is re-extracted with
+    pypdf, a separate parser, and checked three ways (exact,
+    case-insensitive, whitespace-normalized), and the decoded streams are
+    searched byte for byte. If any phrase survives either check, no output
+    is written and the command exits 1.
+  - A phrase PdfCraft does not find is reported by name; nothing is
+    removed for it. A phrase pypdf still finds after redaction blocks the
+    output, so a phrase one parser sees and the other does not cannot pass.
+  - Not covered: text that exists only inside an image (a scan with no
+    text layer) is not found by a text search. Run OCR on scans first, and
+    review the result before producing it.
+  - The output is never overwritten, and PdfCraft works in a private
+    temporary folder passed as `--root`, so it can read and write nothing
+    else.
+- **Bates stamping.** `legal bates-stamp <a.pdf> [<b.pdf> ...] --out-dir <folder>`
+  (or `-o <output.pdf>` for one file) stamps one consecutive sequence
+  across the files in order, the way a production is numbered: if `a.pdf`
+  has two pages, `b.pdf` starts at the third label. Options: `--prefix`,
+  `--suffix`, `--start`, `--digits`. Every output page is re-extracted and
+  must carry its label, all outputs are checked before any is written, and
+  no existing file is overwritten. `--engine auto` (the default) uses
+  PdfCraft when it is installed and otherwise the pypdf overlay
+  (`stamp_pdf`), which adds the label without touching page content.
 - `plan_bates_stamps(page_count, config)`: the exact Bates label for every
-  page (prefix, zero-padded number, suffix), unique and consecutive.
-  `legal bates-plan` prints the plan only and says so.
-- `stamp_pdf(pdf_bytes, config)`: a stamped copy of a real PDF, with the
-  planned label rendered on every page. The source pages are preserved
-  (content, images, metadata); only the overlay label is added.
-  `legal bates-stamp <input.pdf> -o <output.pdf> --prefix ACME-` writes
-  it and refuses to overwrite an existing file. Tests prove the label is
-  present on re-extraction from the output bytes and that the page count
-  and original content survive.
-- True redaction is a rebuild, not a cover-up. `redact_pdf(pdf_bytes,
-  phrases)` extracts the text layer, removes every occurrence of the
-  phrases, and writes a brand-new PDF from the redacted text only, then
-  verifies the result on text re-extracted from the rebuilt bytes (plus
-  a raw-bytes check). `legal redact <input.pdf> <phrase>... -o
-  <output.pdf>` writes nothing when verification fails. What the rebuild
-  covers, stated plainly in the CLI output as well:
-  - Covered: target phrases removed from the text layer and verified
-    absent on re-extraction and in the raw bytes; document metadata
-    cleared (no info dictionary or XMP is written); incremental-save
-    history dropped, because the output is a new file; annotations,
-    attachments, and form fields are not carried into the rebuild.
-  - Not covered: text embedded in images was never in the text layer
-    and no OCR check is run, so image content is not verified; the
-    rebuild keeps only the text layer, so original layout, fonts,
-    images, and graphics are not preserved.
-- Verification on its own still works as before: `verify_redaction`
-  re-checks a text layer three ways — exact, case-insensitive, and
-  whitespace-normalized — and `legal redact-verify <file> <phrase>...`
-  runs it, verifying a real PDF on text re-extracted from its bytes and
-  saying plainly when no PDF was checked.
-- Reading and writing real PDFs uses the optional `pdf` extra, `pypdf`.
-  The plan and verification logic never needs it, and the raw PDF writer
-  used for overlays, fixtures, and the redaction rebuild is standard
-  library only.
+  page, unique and consecutive. `legal bates-plan` prints the plan only and
+  says so.
+- **Text-only rebuild (fallback).** `legal redact ... --engine rebuild`
+  works without PdfCraft: `redact_pdf` extracts the text layer, removes the
+  phrases and writes a brand-new PDF from the remaining text, verified the
+  same way. It keeps only the text: layout, fonts, images and graphics are
+  lost, which is why it is not the default.
+- `legal redact-verify <file> <phrase>...` re-checks any PDF (or a plain
+  text file, saying plainly that no PDF was checked).
 
 ## Still remaining
 

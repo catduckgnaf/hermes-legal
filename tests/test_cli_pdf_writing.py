@@ -39,7 +39,7 @@ def test_cli_bates_stamp_refuses_non_pdf_and_overwrite(tmp_path, capsys):
 
 def test_cli_redact_writes_verified_rebuild_and_states_coverage(tmp_path, capsys):
     src, out = _src(tmp_path), tmp_path / "redacted.pdf"
-    assert main(["redact", str(src), SECRET, "-o", str(out)]) == 0
+    assert main(["redact", str(src), SECRET, "-o", str(out), "--engine", "rebuild"]) == 0
     text = capsys.readouterr().out
     assert "not covered" in text and "metadata cleared" in text
     data = out.read_bytes()

@@ -20,11 +20,17 @@ from datetime import date
 from . import providers as providers_module
 
 # (name, check, hint, required) — only a missing required check fails the run.
+def _pdfcraft_available():
+    from . import pdfcraft
+    return pdfcraft.available()
+
+
 CHECKS = [
     ("Python 3.12+", lambda: sys.version_info >= (3, 12), "Install Python 3.12 or newer.", True),
     ("LibreOffice (DOCX to PDF, fallback editor)", lambda: bool(shutil.which("soffice")), "Install LibreOffice, or use ONLYOFFICE as the editor.", False),
     ("ONLYOFFICE (OOXML-native editing)", lambda: bool(shutil.which("onlyoffice") or shutil.which("desktopeditors")), "Optional: LibreOffice covers editing; ONLYOFFICE gives the closest Word fidelity.", False),
     ("Tesseract OCR", lambda: bool(shutil.which("tesseract")), "Install Tesseract for scanned documents.", False),
+    ("PdfCraft (PDF redaction and Bates stamping)", lambda: _pdfcraft_available(), "Install PdfCraft (https://github.com/storytold/pdfcraft/releases) and put pdfcraft-cli on PATH or set HERMES_LEGAL_PDFCRAFT; `legal redact` needs it.", False),
     ("Ollama (local models)", lambda: bool(shutil.which("ollama")), "Install Ollama or LM Studio for LOCAL-ONLY inference. Without one, no AI features run — by design.", False),
     ("CourtListener token", lambda: False, "Optional: add a free CourtListener token in Settings for citation verification.", False),
 ]
