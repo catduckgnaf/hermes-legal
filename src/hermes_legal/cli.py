@@ -147,6 +147,124 @@ def _run_cite_attest(args, attest_conn=None):
     }, indent=2))
     return 0
 
+def _bates_outputs(args):
+    import pathlib
+    inputs = [pathlib.Path(i) for i in args.inputs]
+    if args.output:
+        if len(inputs) != 1:
+            raise ValueError("-o names one output; use --out-dir for several inputs")
+        return list(zip(inputs, [pathlib.Path(args.output)]))
+    folder = pathlib.Path(args.out_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    return [(i, folder / f"{i.stem}-bates.pdf") for i in inputs]
+
+def _run_bates_stamp(args):
+    from . import pdf_tools, pdfcraft
+    try:
+        config = pdf_tools.BatesConfig(prefix=args.prefix, suffix=args.suffix,
+                                       start=args.start, digits=args.digits)
+        pairs = _bates_outputs(args)
+    except ValueError as exc:
+        print(f"error: no PDF was stamped: {exc}", file=sys.stderr); return 2
+    engine = args.engine
+    if engine == "auto":
+        engine = "pdfcraft" if pdfcraft.available() else "pypdf"
+    try:
+        if engine == "pdfcraft":
+            stamped = pdfcraft.bates(pairs, config)
+        else:
+            stamped = _bates_with_pypdf(pairs, config)
+    except FileExistsError as exc:
+        print(f"error: {exc}", file=sys.stderr); return 2
+    except (ValueError, RuntimeError) as exc:
+        print(f"error: no PDF was stamped: {exc}", file=sys.stderr); return 2
+    for item in stamped:
+        print(f"stamped PDF written to {item.output}: {item.pages} pages, labels {item.first} to {item.last}"
+              if item.pages else f"stamped PDF written to {item.output}: 0 pages")
+    print(f"engine: {engine}")
+    return 0
+
+def _bates_with_pypdf(pairs, config):
+    """The pypdf overlay, one consecutive sequence across the files."""
+    import dataclasses
+    from . import pdf_tools
+    from .pdfcraft import BatesFile
+    for _, out in pairs:
+        if out.exists():
+            raise FileExistsError(f"{out} already exists; stamping never overwrites a file")
+    built, start = [], config.start
+    for src, out in pairs:
+        data = src.read_bytes()
+        if not pdf_tools.is_pdf_bytes(data):
+            raise ValueError(f"not a PDF: {src}")
+        part = dataclasses.replace(config, start=start)
+        stamped = pdf_tools.stamp_pdf(data, part)
+        plan = pdf_tools.plan_bates_stamps(pdf_tools.extract_text_layer(data).page_count, part)
+        built.append((out, stamped, BatesFile(src, out, plan[0].label if plan else "",
+                                              plan[-1].label if plan else "", len(plan))))
+        start += len(plan)
+    for out, stamped, _ in built:
+        with out.open("xb") as handle:
+            handle.write(stamped)
+    return [item for _, _, item in built]
+
+def _run_redact(args):
+    import pathlib
+    from . import pdf_tools, pdfcraft
+    data = pathlib.Path(args.input).read_bytes()
+    if not pdf_tools.is_pdf_bytes(data):
+        print("error: no PDF was redacted: the input is not a PDF", file=sys.stderr); return 2
+    if args.engine == "rebuild":
+        return _redact_by_rebuild(args, data)
+    try:
+        outcome = pdfcraft.redact(args.input, args.output, list(args.phrases))
+    except FileExistsError as exc:
+        print(f"error: {exc}", file=sys.stderr); return 2
+    except (ValueError, RuntimeError) as exc:
+        print(f"error: no PDF was redacted: {exc}", file=sys.stderr)
+        if not pdfcraft.available():
+            print("hint: --engine rebuild works without PdfCraft but keeps only the text layer",
+                  file=sys.stderr)
+        return 2
+    for line in pdfcraft.REDACTION_COVERAGE:
+        print(line)
+    if not outcome.passed:
+        print("error: a phrase survived in the redacted PDF; no output file was written", file=sys.stderr)
+        print(json.dumps(outcome.as_dict(), indent=2))
+        return 1
+    found = sum(outcome.marked.values())
+    missing = [p for p, n in outcome.marked.items() if not n]
+    print(f"redacted PDF written to {args.output}: {found} occurrence(s) removed; "
+          f"hidden information removed: {', '.join(outcome.hidden_removed) or 'none present'}; "
+          "independent verification passed")
+    if missing:
+        print(f"note: not found in the document, so nothing was removed for: {', '.join(missing)}")
+    return 0
+
+def _redact_by_rebuild(args, data):
+    import pathlib
+    from . import pdf_tools
+    try:
+        result = pdf_tools.redact_pdf(data, list(args.phrases))
+    except RuntimeError as exc:
+        print(f"error: no PDF was redacted: {exc}", file=sys.stderr); return 2
+    for line in pdf_tools.REDACTION_COVERAGE:
+        print(line)
+    if not result.verification.passed:
+        print("error: redaction verification failed on the rebuilt PDF; no output file was written",
+              file=sys.stderr)
+        print(json.dumps(result.as_dict(), indent=2))
+        return 1
+    try:
+        with pathlib.Path(args.output).open("xb") as handle:
+            handle.write(result.output_bytes)
+    except FileExistsError:
+        print(f"error: {args.output} already exists; redaction never overwrites a file", file=sys.stderr)
+        return 2
+    print(f"redacted PDF written to {args.output}: {result.plan.as_dict()['hit_count']} occurrence(s) "
+          f"removed from pages {result.plan.pages_affected}; verification passed on the rebuilt bytes")
+    return 0
+
 def main(argv=None, *, cite_resolver=None, attest_conn=None):
     ap = argparse.ArgumentParser(prog="legal", description="Hermes Legal: local-first legal work")
     ap.add_argument("--version", action="version", version=__version__)
@@ -192,12 +310,19 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
     bp = sub.add_parser("bates-plan", help="plan Bates labels for a page count (plan only; renders nothing)")
     bp.add_argument("--pages", type=int, required=True); bp.add_argument("--prefix", default="")
     bp.add_argument("--start", type=int, default=1); bp.add_argument("--digits", type=int, default=6)
-    bs = sub.add_parser("bates-stamp", help="stamp Bates labels onto every page of a real PDF and write a stamped PDF")
-    bs.add_argument("input"); bs.add_argument("-o", "--output", required=True)
-    bs.add_argument("--prefix", default=""); bs.add_argument("--start", type=int, default=1)
-    bs.add_argument("--digits", type=int, default=6)
-    rd = sub.add_parser("redact", help="true redaction: rebuild a PDF from its redacted text layer only, with metadata cleared, and verify the rebuilt bytes")
+    bs = sub.add_parser("bates-stamp", help="stamp one consecutive Bates sequence across one or more PDFs, in order")
+    bs.add_argument("inputs", nargs="+", metavar="input")
+    bs_out = bs.add_mutually_exclusive_group(required=True)
+    bs_out.add_argument("-o", "--output", help="output file (one input only)")
+    bs_out.add_argument("--out-dir", help="output folder; each file is written as <name>-bates.pdf")
+    bs.add_argument("--prefix", default=""); bs.add_argument("--suffix", default="")
+    bs.add_argument("--start", type=int, default=1); bs.add_argument("--digits", type=int, default=6)
+    bs.add_argument("--engine", choices=["auto", "pdfcraft", "pypdf"], default="auto",
+                    help="auto (default) uses PdfCraft when installed, else the pypdf overlay")
+    rd = sub.add_parser("redact", help="true redaction with PdfCraft: cut the phrases from the page content, remove hidden information, verify independently")
     rd.add_argument("input"); rd.add_argument("phrases", nargs="+"); rd.add_argument("-o", "--output", required=True)
+    rd.add_argument("--engine", choices=["pdfcraft", "rebuild"], default="pdfcraft",
+                    help="pdfcraft (default) keeps the layout; rebuild writes a new text-only PDF and loses layout, fonts and images")
     rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
     rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
@@ -355,54 +480,9 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
         print("plan only: no PDF was stamped by this command")
         return 0
     if args.cmd == "bates-stamp":
-        import pathlib
-        from . import pdf_tools
-        from .pdf_tools import BatesConfig, plan_bates_stamps, stamp_pdf
-        data = pathlib.Path(args.input).read_bytes()
-        if not pdf_tools.is_pdf_bytes(data):
-            print("error: no PDF was stamped: the input is not a PDF", file=sys.stderr); return 2
-        config = BatesConfig(prefix=args.prefix, start=args.start, digits=args.digits)
-        try:
-            stamped = stamp_pdf(data, config)
-        except RuntimeError as exc:
-            print(f"error: no PDF was stamped: {exc}", file=sys.stderr); return 2
-        plan = plan_bates_stamps(pdf_tools.extract_text_layer(data).page_count, config)
-        try:
-            with pathlib.Path(args.output).open("xb") as handle:
-                handle.write(stamped)
-        except FileExistsError:
-            print(f"error: {args.output} already exists; stamping never overwrites a file", file=sys.stderr)
-            return 2
-        print(f"stamped PDF written to {args.output}: {len(plan)} pages, "
-              f"labels {plan[0].label} to {plan[-1].label}" if plan else
-              f"stamped PDF written to {args.output}: 0 pages")
-        return 0
+        return _run_bates_stamp(args)
     if args.cmd == "redact":
-        import pathlib
-        from . import pdf_tools
-        data = pathlib.Path(args.input).read_bytes()
-        if not pdf_tools.is_pdf_bytes(data):
-            print("error: no PDF was redacted: the input is not a PDF", file=sys.stderr); return 2
-        try:
-            result = pdf_tools.redact_pdf(data, list(args.phrases))
-        except RuntimeError as exc:
-            print(f"error: no PDF was redacted: {exc}", file=sys.stderr); return 2
-        for line in pdf_tools.REDACTION_COVERAGE:
-            print(line)
-        if not result.verification.passed:
-            print("error: redaction verification failed on the rebuilt PDF; no output file was written",
-                  file=sys.stderr)
-            print(json.dumps(result.as_dict(), indent=2))
-            return 1
-        try:
-            with pathlib.Path(args.output).open("xb") as handle:
-                handle.write(result.output_bytes)
-        except FileExistsError:
-            print(f"error: {args.output} already exists; redaction never overwrites a file", file=sys.stderr)
-            return 2
-        print(f"redacted PDF written to {args.output}: {result.plan.as_dict()['hit_count']} occurrence(s) "
-              f"removed from pages {result.plan.pages_affected}; verification passed on the rebuilt bytes")
-        return 0
+        return _run_redact(args)
     if args.cmd == "redact-verify":
         import pathlib
         from . import pdf_tools
