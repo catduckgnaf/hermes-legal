@@ -34,7 +34,7 @@ def efile_env(tmp_path):
         conn.close()
 
 
-def test_efile_bundle_validation_and_unattended_refusal(efile_env):
+def test_efile_bundle_validation_without_pypdf(efile_env):
     conn, db_path, _, matter_id = efile_env
     ctx = dispatch.Context(conn=conn, surface="cli", db_path=db_path)
 
@@ -50,9 +50,13 @@ def test_efile_bundle_validation_and_unattended_refusal(efile_env):
     escape = dispatch.dispatch("legal_efile_bundle", {"matter_id": matter_id, "documents": ["../outside.pdf"], "output": "bundle.pdf"}, ctx)
     assert escape["error"]["code"] == "path_outside_matter"
 
+
+def test_efile_bundle_unattended_refusal(efile_env):
+    pytest.importorskip("pypdf")
+    conn, db_path, _, matter_id = efile_env
     unattended = dispatch.Context(conn=conn, surface="cli", unattended=True, db_path=db_path)
     refused = dispatch.dispatch("legal_efile_bundle", {"matter_id": matter_id, "documents": ["motion.pdf"], "output": "bundle.pdf"}, unattended)
-    assert refused["error"]["code"] in ("refused_unattended", "citation_gate_blocked")
+    assert refused["error"]["code"] == "refused_unattended"
 
 
 def test_efile_bundle_blocks_on_unverified_citations_and_builds_on_approval(efile_env):
