@@ -1,6 +1,6 @@
 name: Research or evaluation
 description: A question to investigate before committing to an implementation.
-labels: []
+labels: ["question"]
 body:
   - type: markdown
     attributes:
