@@ -11,8 +11,8 @@ needs no token at all.
 
 Doctor also carries the privacy warnings: a cloud provider whose
 terms-checked date is stale, and a STANDARD-tier provider selected for a
-matter whose ceiling is LOCAL_ONLY. Warnings are reported as ``warn`` lines
-and never counted as missing integrations.
+privileged matter (a LOCAL_ONLY or ZERO_RETENTION ceiling). Warnings are
+reported as ``warn`` lines and never counted as missing integrations.
 """
 import shutil, sys
 from datetime import date
@@ -37,9 +37,10 @@ def privacy_warnings(today=None, *, selected_provider=None, matter_ceiling=None,
     - Every cloud provider whose terms-checked date is older than
       ``stale_after_days`` earns a warning naming the provider, the date,
       and its age in days.
-    - A STANDARD-tier provider selected for a LOCAL_ONLY-ceiling matter
-      earns a warning: the router will refuse that call, and on a
-      privileged matter the selection itself is the thing to fix.
+    - A STANDARD-tier provider selected for a privileged matter (a
+      LOCAL_ONLY or ZERO_RETENTION ceiling) earns a warning: the router
+      will refuse that call, and on a privileged matter the selection
+      itself is the thing to fix.
     - A BLOCKED-tier selection warns at every ceiling.
     """
     today = today or date.today()
@@ -63,12 +64,12 @@ def privacy_warnings(today=None, *, selected_provider=None, matter_ceiling=None,
                 f"for client work; the router refuses it at every ceiling, "
                 f"including this matter's {ceiling} ceiling."
             )
-        elif provider.tier == "STANDARD" and ceiling == "LOCAL_ONLY":
+        elif provider.tier == "STANDARD" and ceiling != "STANDARD":
             warnings.append(
                 f"{provider.name} is a STANDARD-tier provider selected for "
-                "a LOCAL_ONLY matter; the router will refuse it — use a "
-                "local provider or raise the matter ceiling with informed "
-                "client consent first."
+                f"a privileged {ceiling} matter; the router will refuse "
+                "it — use a provider at or below the ceiling or raise "
+                "the matter ceiling with informed client consent first."
             )
         elif not providers_module.allowed(provider, ceiling):
             warnings.append(
