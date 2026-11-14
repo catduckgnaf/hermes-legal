@@ -27,8 +27,6 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install dependencies
         run: uv sync
-      - name: Hermes plugin compiles on Python 3.11
-        run: uv run --no-project --python 3.11 python -m compileall -q hermes_plugin
       - name: Offline tests
         run: uv run python -m pytest -q
   check:

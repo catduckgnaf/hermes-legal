@@ -50,7 +50,7 @@ and source, not a compiled deliverable in pull request CI:
   `hermes_legal`; this is packaging, not a rename.
 - `src/lib.rs` starts the sidecar as `legal serve --port 8770` (loopback
   only) and keeps the shell usable, with an explanation on screen, when
-  the sidecar cannot start — the plugin and dashboard never depend on
+  the sidecar cannot start — the CLI, MCP server and dashboard never depend on
   the shell.
 - `capabilities/default.json` lets the shell execute exactly the bundled
   sidecar and nothing else.

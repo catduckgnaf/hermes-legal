@@ -1,6 +1,6 @@
 # Agent tools
 
-The `legal` CLI, the MCP server and the Hermes plugin all call the same dispatcher, so they follow the same rules.
+The `legal` CLI and the MCP server both call the same dispatcher, so they follow the same rules.
 
 ## Run the MCP server
 
