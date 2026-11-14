@@ -82,15 +82,72 @@ def _run_ask(args):
     return 0
 
 def _default_cite_resolver():
-    """The resolver `legal cite-check` runs by default: a CourtListener
-    client when a token is configured in the environment, else None, in
-    which case cite-check stays fully offline and reports every citation
-    as unverified."""
+    """The resolver `legal cite-check` runs by default: a router pairing
+    a CourtListener client (case citations) with a govinfo client
+    (U.S.C. statutes) when a CourtListener token or a govinfo API key is
+    configured in the environment, else None, in which case cite-check
+    stays fully offline and reports every citation as unverified. The
+    govinfo link service needs no key, but it is only wired in alongside
+    a configured credential so the no-token path stays exactly as
+    offline as before."""
+    from .citations import GovInfoClient, ResolverRouter
     from .citations import CourtListenerClient
     client = CourtListenerClient()
-    return client if client.has_token else None
+    govinfo = GovInfoClient()
+    if not client.has_token and not govinfo.has_api_key:
+        return None
+    return ResolverRouter(
+        case_resolver=client if client.has_token else None,
+        statute_resolver=govinfo)
 
-def main(argv=None, *, cite_resolver=None):
+def _cite_check_ceiling(args):
+    """(ceiling, matter_id, error) for cite-check: an explicit ceiling
+    wins; a matter id reads the matter's stored ceiling from the
+    existing database without creating one."""
+    if getattr(args, "privacy_ceiling", None):
+        return args.privacy_ceiling, getattr(args, "matter_id", None), None
+    matter_id = getattr(args, "matter_id", None)
+    if matter_id is None:
+        return None, None, None
+    if not db.default_path().is_file():
+        return None, matter_id, "no hermes-legal database exists yet, so the matter ceiling cannot be read"
+    conn = db.connect_readonly(db.default_path())
+    try:
+        row = conn.execute("SELECT privacy_ceiling FROM matters WHERE id=?", (matter_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None, matter_id, f"no such matter: {matter_id}"
+    return row[0], matter_id, None
+
+def _run_cite_attest(args, attest_conn=None):
+    """`legal cite-attest`: record a human attestation (who, when, what
+    source) for a citation a resolver cannot cover, through the existing
+    attestation store. The timestamp is recorded by the store."""
+    from .citations import attestation_class, record_attestation
+    own_conn = attest_conn is None
+    conn = attest_conn if attest_conn is not None else db.connect()
+    try:
+        record = record_attestation(
+            conn, args.citation, attested_by=args.by, source=args.source,
+            matter_id=args.matter_id)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr); return 2
+    finally:
+        if own_conn:
+            conn.close()
+    print(json.dumps({
+        "citation": record.citation,
+        "citation_class": attestation_class(record.citation),
+        "attested_by": record.attested_by,
+        "attested_at": record.attested_at,
+        "source": record.source,
+        "matter_id": record.matter_id,
+        "note": "Recorded. This attestation lets the Verify-All gate accept this citation; it never applies to an ordinary case citation and never overrides a resolver not_found.",
+    }, indent=2))
+    return 0
+
+def main(argv=None, *, cite_resolver=None, attest_conn=None):
     ap = argparse.ArgumentParser(prog="legal", description="Hermes Legal: local-first legal work")
     ap.add_argument("--version", action="version", version=__version__)
     sub = ap.add_subparsers(dest="cmd")
@@ -113,6 +170,15 @@ def main(argv=None, *, cite_resolver=None):
     mdocs.add_argument("matter_id", type=int)
     mdocs.add_argument("--json", action="store_true")
     c = sub.add_parser("cite-check"); c.add_argument("text")
+    c.add_argument("--privacy-ceiling", choices=["LOCAL_ONLY", "ZERO_RETENTION", "STANDARD"], default=None,
+                   help="matter privacy ceiling to enforce: on LOCAL_ONLY no citation lookup leaves the device")
+    c.add_argument("--matter-id", type=int, default=None,
+                   help="read the privacy ceiling and recorded attestations for this matter from the database")
+    ca = sub.add_parser("cite-attest", help="record a human attestation for a statute, Westlaw, Lexis, or public-domain citation (who checked it, from what source)")
+    ca.add_argument("citation", help="the citation as written, e.g. '42 U.S.C. § 1983' or '2019 WL 4639462'")
+    ca.add_argument("--by", required=True, help="who checked the citation")
+    ca.add_argument("--source", required=True, help="the source it was checked in")
+    ca.add_argument("--matter-id", type=int, default=None)
     dc = sub.add_parser("doc-compare", help="deterministic paragraph-level DOCX compare")
     dc.add_argument("original"); dc.add_argument("revised"); dc.add_argument("--json", action="store_true")
     dr = sub.add_parser("doc-redline", help="build a DOCX redline with real w:ins / w:del track changes")
@@ -288,11 +354,28 @@ def main(argv=None, *, cite_resolver=None):
               "a text file passing proves nothing about any PDF")
         print(json.dumps(result.as_dict(), indent=2))
         return 0 if result.passed else 1
+    if args.cmd == "cite-attest":
+        return _run_cite_attest(args, attest_conn=attest_conn)
     if args.cmd == "cite-check":
-        from .citations import BLOCKING_STATUSES, HISTORY_DISCLAIMER, extract_citations, format_citation, verify_all_gate
+        from .citations import BLOCKING_STATUSES, HISTORY_DISCLAIMER, build_lookup_preview, extract_citations, format_citation, guard_resolver, load_attestations, verify_all_gate
+        ceiling, matter_id, ceiling_error = _cite_check_ceiling(args)
+        if ceiling_error:
+            print(f"error: {ceiling_error}", file=sys.stderr); return 2
         resolver = cite_resolver if cite_resolver is not None else _default_cite_resolver()
+        if ceiling is not None:
+            resolver = guard_resolver(resolver, ceiling)
         found = extract_citations(args.text, include_unrecognized=True)
-        gate = verify_all_gate(args.text, resolver=resolver)
+        attestations = {}
+        if matter_id is not None and db.default_path().is_file():
+            conn = db.connect_readonly(db.default_path())
+            try:
+                attestations = load_attestations(conn, matter_id)
+            finally:
+                conn.close()
+        gate = verify_all_gate(args.text, resolver=resolver, attestations=attestations)
+        lookup_preview = build_lookup_preview(
+            found, ceiling=ceiling,
+            resolver_name=getattr(resolver, "name", "") if resolver is not None else "") if ceiling is not None else None
         results = {r.citation: r for r in gate.results}
         entries = []
         for c in found:
@@ -310,7 +393,9 @@ def main(argv=None, *, cite_resolver=None):
             overall = next((s for s in statuses if s in BLOCKING_STATUSES), statuses[0])
         else:
             overall = "unverified"
-        if resolver is None:
+        if lookup_preview is not None and lookup_preview.blocked:
+            note = lookup_preview.blocked_reason
+        elif resolver is None:
             note = "Extraction checks nothing: no resolver was run, so every citation above is unverified and nothing was asserted by a model."
         else:
             note = (f"Citation statuses are from the {getattr(resolver, 'name', 'resolver')} resolver; "
@@ -322,6 +407,8 @@ def main(argv=None, *, cite_resolver=None):
             "note": note,
             "history": "history_unknown",
             "history_note": HISTORY_DISCLAIMER,
+            "privacy_ceiling": ceiling,
+            "lookup_preview": lookup_preview.to_dict() if lookup_preview is not None else None,
             "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},
         }, indent=2)); return 0
     if args.cmd == "tool":
