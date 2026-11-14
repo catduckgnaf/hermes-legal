@@ -1,0 +1,1 @@
+{"sub": "user-1", "name": "Synthetic User", "accounts": [{"account_id": "acct-old", "account_name": "Old account", "base_uri": "https://na3.docusign.net", "is_default": false}, {"account_id": "acct-demo-1", "account_name": "Synthetic demo account", "base_uri": "https://demo.docusign.net", "is_default": true}]}
