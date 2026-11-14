@@ -14,7 +14,7 @@ from .docx_edit import (AUTHOR, W_NS, _settings_xml, _styles_xml, _w, _xml_bytes
                         build_redline, document_root, make_docx, package_docx,
                         paragraph_element, run_element)
 
-FIDELITY_CASES = ("plain", "numbering", "footnotes", "tables", "tracked_changes")
+FIDELITY_CASES = ("plain", "numbering", "footnotes", "tables", "tracked_changes", "word_style")
 
 
 def make_numbered_docx(items: list[str]) -> bytes:
@@ -108,6 +108,50 @@ def make_tracked_docx(original: list[str], revised: list[str]) -> bytes:
                          when=datetime(2026, 1, 1, tzinfo=timezone.utc))
 
 
+def make_word_style_docx() -> bytes:
+    """A DOCX in the shape real Microsoft Word writes, not the minimal shape.
+
+    Word declares extra namespaces on the document root and references
+    them from attribute values (``mc:Ignorable="w14 w15 wp14"``,
+    ``w14:paraId``, ``w14:textId``), stamps paragraphs and runs with
+    ``w:rsidR`` / ``w:rsidRPr`` revision identifiers, and writes tracked
+    changes as ``w:ins`` / ``w:del`` elements carrying ``w:id``,
+    ``w:author``, and ``w:date``. This fixture reproduces those patterns
+    as literal XML so the corpus covers the foreign-file shape Word and
+    LibreOffice actually exchange. Accepting its changes gives the
+    Tuesday text; rejecting them gives the Monday text.
+    """
+    document = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
+        'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" '
+        'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" '
+        'xmlns:wp14="http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing" '
+        'mc:Ignorable="w14 w15 wp14">'
+        "<w:body>"
+        '<w:p w14:paraId="1A2B3C4D" w14:textId="77777777" w:rsidR="00AB12CD" w:rsidRDefault="00AB12CD">'
+        '<w:r w:rsidRPr="00AB12CD"><w:t xml:space="preserve">The hearing is on </w:t></w:r>'
+        '<w:ins w:id="901" w:author="Word Author" w:date="2026-01-01T09:30:00Z">'
+        '<w:r w:rsidR="00AB12CD"><w:t>Tuesday</w:t></w:r></w:ins>'
+        '<w:del w:id="902" w:author="Word Author" w:date="2026-01-01T09:30:00Z">'
+        '<w:r w:rsidR="00AB12CD"><w:delText>Monday</w:delText></w:r></w:del>'
+        '<w:r><w:t>.</w:t></w:r>'
+        "</w:p>"
+        '<w:p w14:paraId="5E6F7A8B" w:rsidR="00AB12CD">'
+        "<w:r><w:t>Filing is due Friday.</w:t></w:r>"
+        "</w:p>"
+        '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>'
+        "</w:body></w:document>"
+    ).encode("utf-8")
+    parts = {
+        "word/document.xml": document,
+        "word/styles.xml": _styles_xml(),
+        "word/settings.xml": _settings_xml(),
+    }
+    return package_docx(parts)
+
+
 def fidelity_corpus() -> dict[str, bytes]:
     """The full corpus, keyed by case name, in :data:`FIDELITY_CASES` order."""
     return {
@@ -118,4 +162,5 @@ def fidelity_corpus() -> dict[str, bytes]:
         "tracked_changes": make_tracked_docx(
             ["The hearing is on Monday.", "Filing is due Friday."],
             ["The hearing is on Tuesday.", "Filing is due Friday."]),
+        "word_style": make_word_style_docx(),
     }
