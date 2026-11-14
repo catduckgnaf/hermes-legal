@@ -83,7 +83,7 @@ def test_local_only_matter_is_never_looked_up_online(world):
 
 def test_unknown_and_unbuilt_tools_are_distinct_errors(world):
     assert code(runtime.dispatch("legal_nope", {}, agent())) == "unknown_tool"
-    assert code(runtime.dispatch("legal_chronology", {}, agent())) == "not_implemented"
+    assert code(runtime.dispatch("legal_transcribe", {}, agent())) == "not_implemented"
 
 
 @pytest.mark.parametrize("args", [{}, {"matter_id": "1"}, {"matter_id": True}, {"matter_id": 1, "extra": 1}, "nope"])
@@ -230,7 +230,7 @@ def test_mcp_lists_writes_only_after_a_person_turns_them_on(world, monkeypatch):
     monkeypatch.setenv(runtime.AGENT_TIER_ENV, "LOCAL_ONLY")
     names = lambda: {tool["name"] for tool in rpc("tools/list")["result"]["tools"]}
     assert "legal_doc_redline" not in names() and "legal_doc_read" in names()
-    assert "legal_chronology" not in names()
+    assert "legal_transcribe" not in names()
     result, outcome = call("legal_doc_redline", REDLINE)
     assert result["isError"] and code(outcome) == "writes_disabled"
     mcp_server.set_writes_allowed(conn, True)
