@@ -1,9 +1,9 @@
-# Document editing: DOCX redlines, PDF Bates plans, and true redaction
+# Document editing: DOCX redlines, PDF Bates stamping, and true redaction
 
 This page describes what works today in the Python package. It is narrower
-than the full editing stack in [Desktop](desktop.md): the visual editors
-(ONLYOFFICE and LibreOffice), OCR, and rendered PDF writing are separate
-build items, and nothing on this page claims them.
+than the full editing stack in [Desktop](desktop.md): the visual editor
+(ONLYOFFICE), OCR, and opening files in real Microsoft Word are separate
+items, and nothing on this page claims them.
 
 ## DOCX compare and redline (`hermes_legal.docx_edit`)
 
@@ -32,34 +32,74 @@ legal doc-compare original.docx revised.docx --json
 legal doc-redline original.docx revised.docx -o redline.docx
 ```
 
-## Fidelity corpus (`hermes_legal.docx_fixtures`)
+## Fidelity corpus and the LibreOffice gate (`hermes_legal.docx_fixtures`)
 
 Generated, byte-identical DOCX cases for the features a round trip through
 Word or LibreOffice must survive: plain paragraphs, numbering
 (`w:numPr` with a numbering part), footnotes (a footnote reference with a
-footnotes part), tables (`w:tbl` between paragraphs), and pre-existing
-tracked changes. The tests build the corpus, check each package is a valid
-zip with parseable document XML, and check that a table survives a redline
-of the paragraphs around it. Rendering comparison in the visual editors is
-still a separate item; this corpus proves structure, not pixels.
+footnotes part), tables (`w:tbl` between paragraphs), pre-existing
+tracked changes, and a Word-authored-style case (`word_style`) that
+reproduces the patterns real Word files carry — `mc:Ignorable` namespace
+declarations, `w14:paraId` attributes, `w:rsidR` revision identifiers,
+and `w:ins` / `w:del` elements with `w:id`, author, and date.
 
-## PDF: Bates plan and redaction verification (`hermes_legal.pdf_tools`)
+The LibreOffice fidelity gate (`tests/test_libreoffice_fidelity.py`)
+converts a built redline and the Word-style fixture with LibreOffice
+headless and checks the conversion succeeds and the inserted text
+survives as document content. It runs wherever `soffice` is installed
+and skips cleanly where it is not. The gate immediately earned its keep:
+LibreOffice refused to load every generated DOCX because the package
+parts (`[Content_Types].xml` and the `.rels` files) were serialized with
+an invented `ns0:` namespace prefix instead of the default namespace;
+those parts are now written in the default-namespace form, with a
+regression test that needs no LibreOffice to run. Opening a redline in
+real Microsoft Word remains a manual release gate — Word is not
+available in the build environment, and this page does not claim it.
+
+## PDF: Bates stamping and true redaction (`hermes_legal.pdf_tools`)
 
 - `plan_bates_stamps(page_count, config)`: the exact Bates label for every
-  page (prefix, zero-padded number, suffix), unique and consecutive. This
-  is a plan for a writer step to render; `legal bates-plan` prints the plan
-  and says so — it does not stamp a PDF.
-- True redaction works on the extracted text layer (`DocumentText`, one
-  string per page). `locate_redactions` finds every occurrence,
-  `apply_redaction_to_text` removes the text itself (a black rectangle over
-  surviving text is not redaction), and `verify_redaction` re-checks the
-  result three ways — exact, case-insensitive, and whitespace-normalized —
-  so a phrase split across a line break still fails verification.
-  `legal redact-verify <file> <phrase>...` runs that check and exits
-  nonzero when anything remains. Given a real PDF it verifies the text
-  layer re-extracted from the PDF bytes (and refuses, exit 2, when the
-  `pdf` extra is missing); given a plain text file it says plainly that
-  no PDF was checked, because a text file passing proves nothing about
-  any PDF.
-- Reading a real PDF's text layer (`extract_text_layer`) uses the optional
-  `pdf` extra, `pypdf`. The plan and verification logic never needs it.
+  page (prefix, zero-padded number, suffix), unique and consecutive.
+  `legal bates-plan` prints the plan only and says so.
+- `stamp_pdf(pdf_bytes, config)`: a stamped copy of a real PDF, with the
+  planned label rendered on every page. The source pages are preserved
+  (content, images, metadata); only the overlay label is added.
+  `legal bates-stamp <input.pdf> -o <output.pdf> --prefix ACME-` writes
+  it and refuses to overwrite an existing file. Tests prove the label is
+  present on re-extraction from the output bytes and that the page count
+  and original content survive.
+- True redaction is a rebuild, not a cover-up. `redact_pdf(pdf_bytes,
+  phrases)` extracts the text layer, removes every occurrence of the
+  phrases, and writes a brand-new PDF from the redacted text only, then
+  verifies the result on text re-extracted from the rebuilt bytes (plus
+  a raw-bytes check). `legal redact <input.pdf> <phrase>... -o
+  <output.pdf>` writes nothing when verification fails. What the rebuild
+  covers, stated plainly in the CLI output as well:
+  - Covered: target phrases removed from the text layer and verified
+    absent on re-extraction and in the raw bytes; document metadata
+    cleared (no info dictionary or XMP is written); incremental-save
+    history dropped, because the output is a new file; annotations,
+    attachments, and form fields are not carried into the rebuild.
+  - Not covered: text embedded in images was never in the text layer
+    and no OCR check is run, so image content is not verified; the
+    rebuild keeps only the text layer, so original layout, fonts,
+    images, and graphics are not preserved.
+- Verification on its own still works as before: `verify_redaction`
+  re-checks a text layer three ways — exact, case-insensitive, and
+  whitespace-normalized — and `legal redact-verify <file> <phrase>...`
+  runs it, verifying a real PDF on text re-extracted from its bytes and
+  saying plainly when no PDF was checked.
+- Reading and writing real PDFs uses the optional `pdf` extra, `pypdf`.
+  The plan and verification logic never needs it, and the raw PDF writer
+  used for overlays, fixtures, and the redaction rebuild is standard
+  library only.
+
+## Still remaining
+
+- OCR for scanned documents (Tesseract): not built. Tesseract is not
+  installed in the build environment, and wrapping it honestly also
+  needs a page rasterizer; it stays an open item on the document issue.
+- Visual DOCX editing via ONLYOFFICE: a desktop build item, not part of
+  the Python package.
+- Opening a redline in real Microsoft Word: a manual release gate, as
+  stated above.

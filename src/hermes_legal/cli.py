@@ -120,6 +120,12 @@ def main(argv=None, *, cite_resolver=None):
     bp = sub.add_parser("bates-plan", help="plan Bates labels for a page count (plan only; renders nothing)")
     bp.add_argument("--pages", type=int, required=True); bp.add_argument("--prefix", default="")
     bp.add_argument("--start", type=int, default=1); bp.add_argument("--digits", type=int, default=6)
+    bs = sub.add_parser("bates-stamp", help="stamp Bates labels onto every page of a real PDF and write a stamped PDF")
+    bs.add_argument("input"); bs.add_argument("-o", "--output", required=True)
+    bs.add_argument("--prefix", default=""); bs.add_argument("--start", type=int, default=1)
+    bs.add_argument("--digits", type=int, default=6)
+    rd = sub.add_parser("redact", help="true redaction: rebuild a PDF from its redacted text layer only, with metadata cleared, and verify the rebuilt bytes")
+    rd.add_argument("input"); rd.add_argument("phrases", nargs="+"); rd.add_argument("-o", "--output", required=True)
     rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
     rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
@@ -266,6 +272,55 @@ def main(argv=None, *, cite_resolver=None):
         stamps = plan_bates_stamps(args.pages, BatesConfig(prefix=args.prefix, start=args.start, digits=args.digits))
         print(json.dumps([s.as_dict() for s in stamps], indent=2))
         print("plan only: no PDF was stamped by this command")
+        return 0
+    if args.cmd == "bates-stamp":
+        import pathlib
+        from . import pdf_tools
+        from .pdf_tools import BatesConfig, plan_bates_stamps, stamp_pdf
+        data = pathlib.Path(args.input).read_bytes()
+        if not pdf_tools.is_pdf_bytes(data):
+            print("error: no PDF was stamped: the input is not a PDF", file=sys.stderr); return 2
+        config = BatesConfig(prefix=args.prefix, start=args.start, digits=args.digits)
+        try:
+            stamped = stamp_pdf(data, config)
+        except RuntimeError as exc:
+            print(f"error: no PDF was stamped: {exc}", file=sys.stderr); return 2
+        plan = plan_bates_stamps(pdf_tools.extract_text_layer(data).page_count, config)
+        try:
+            with pathlib.Path(args.output).open("xb") as handle:
+                handle.write(stamped)
+        except FileExistsError:
+            print(f"error: {args.output} already exists; stamping never overwrites a file", file=sys.stderr)
+            return 2
+        print(f"stamped PDF written to {args.output}: {len(plan)} pages, "
+              f"labels {plan[0].label} to {plan[-1].label}" if plan else
+              f"stamped PDF written to {args.output}: 0 pages")
+        return 0
+    if args.cmd == "redact":
+        import pathlib
+        from . import pdf_tools
+        data = pathlib.Path(args.input).read_bytes()
+        if not pdf_tools.is_pdf_bytes(data):
+            print("error: no PDF was redacted: the input is not a PDF", file=sys.stderr); return 2
+        try:
+            result = pdf_tools.redact_pdf(data, list(args.phrases))
+        except RuntimeError as exc:
+            print(f"error: no PDF was redacted: {exc}", file=sys.stderr); return 2
+        for line in pdf_tools.REDACTION_COVERAGE:
+            print(line)
+        if not result.verification.passed:
+            print("error: redaction verification failed on the rebuilt PDF; no output file was written",
+                  file=sys.stderr)
+            print(json.dumps(result.as_dict(), indent=2))
+            return 1
+        try:
+            with pathlib.Path(args.output).open("xb") as handle:
+                handle.write(result.output_bytes)
+        except FileExistsError:
+            print(f"error: {args.output} already exists; redaction never overwrites a file", file=sys.stderr)
+            return 2
+        print(f"redacted PDF written to {args.output}: {result.plan.as_dict()['hit_count']} occurrence(s) "
+              f"removed from pages {result.plan.pages_affected}; verification passed on the rebuilt bytes")
         return 0
     if args.cmd == "redact-verify":
         import pathlib
