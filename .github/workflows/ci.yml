@@ -29,6 +29,31 @@ jobs:
         run: uv sync
       - name: Offline tests
         run: uv run python -m pytest -q
+  pdfcraft-live:
+    # Runs the PdfCraft redaction and Bates tests against the real CLI. The
+    # release is pinned by version and SHA-256; bump both together.
+    name: pdfcraft-live
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PDFCRAFT_VERSION: "0.21.1"
+      PDFCRAFT_SHA256: "a97b2e789d214360424f19814bc66f3eaf6d04ef5e42e472b46f7b9ddceea5c8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --extra pdf
+      - name: Install pinned PdfCraft CLI
+        run: |
+          name="pdfcraft-cli-${PDFCRAFT_VERSION}-linux-x86_64"
+          curl -fsSL -o "$RUNNER_TEMP/$name.tar.gz"             "https://github.com/storytold/pdfcraft/releases/download/v${PDFCRAFT_VERSION}/$name.tar.gz"
+          echo "${PDFCRAFT_SHA256}  $RUNNER_TEMP/$name.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/$name.tar.gz" -C "$RUNNER_TEMP"
+          echo "HERMES_LEGAL_PDFCRAFT=$RUNNER_TEMP/$name/pdfcraft-cli" >> "$GITHUB_ENV"
+      - name: PdfCraft tests (live tests must run, not skip)
+        run: |
+          "$HERMES_LEGAL_PDFCRAFT" --version
+          uv run python -m pytest -q -rs tests/test_pdfcraft.py | tee "$RUNNER_TEMP/pdfcraft.log"
+          ! grep -qi "skipped" "$RUNNER_TEMP/pdfcraft.log"
   check:
     name: check
     runs-on: ubuntu-latest
