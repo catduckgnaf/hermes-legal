@@ -101,29 +101,33 @@ _FIXED_ZIP_DATE = (1980, 1, 1, 0, 0, 0)  # deterministic bytes for identical inp
 
 
 def _content_types_xml(parts: dict) -> bytes:
-    root = ET.Element("{http://schemas.openxmlformats.org/package/2006/content-types}Types")
+    # Built as a literal string, not ElementTree: the package parts must
+    # use the default namespace, and ElementTree instead invents an
+    # ``ns0:`` prefix for unregistered namespaces. With the prefix,
+    # LibreOffice refuses to load the file at all ("source file could not
+    # be loaded") — the LibreOffice fidelity gate caught exactly that.
+    out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+           '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">']
     for ext, ctype in (("rels", "application/vnd.openxmlformats-package.relationships+xml"),
                        ("xml", "application/xml")):
-        el = ET.SubElement(root, "{http://schemas.openxmlformats.org/package/2006/content-types}Default")
-        el.set("Extension", ext)
-        el.set("ContentType", ctype)
+        out.append(f'<Default Extension="{ext}" ContentType="{ctype}"/>')
     for name, ctype in _CONTENT_TYPES.items():
         if name in parts:
-            el = ET.SubElement(root, "{http://schemas.openxmlformats.org/package/2006/content-types}Override")
-            el.set("PartName", "/" + name)
-            el.set("ContentType", ctype)
-    return _xml_bytes(root)
+            out.append(f'<Override PartName="/{name}" ContentType="{ctype}"/>')
+    out.append("</Types>")
+    return "".join(out).encode("utf-8")
 
 
 def _rels_xml(rels: list[tuple[str, str, str]]) -> bytes:
-    ns = "http://schemas.openxmlformats.org/package/2006/relationships"
-    root = ET.Element(f"{{{ns}}}Relationships")
+    # Literal string for the same default-namespace reason as above.
+    from xml.sax.saxutils import quoteattr
+    out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+           '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">']
     for rid, rtype, target in rels:
-        el = ET.SubElement(root, f"{{{ns}}}Relationship")
-        el.set("Id", rid)
-        el.set("Type", rtype)
-        el.set("Target", target)
-    return _xml_bytes(root)
+        out.append(f"<Relationship Id={quoteattr(rid)} Type={quoteattr(rtype)} "
+                   f"Target={quoteattr(target)}/>")
+    out.append("</Relationships>")
+    return "".join(out).encode("utf-8")
 
 
 def _styles_xml() -> bytes:
