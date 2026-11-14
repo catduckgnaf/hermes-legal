@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi", "appimage", "deb"],
-    "category": "Office",
+    "category": "Productivity",
     "shortDescription": "Local-first legal work desktop: matter workspaces and document editing with nothing shared by default.",
     "longDescription": "hermes-legal is a local-first desktop for legal work. Matters, documents and the database live in a local SQLite file and ordinary folders on your own computer. The Python core runs as a sidecar process managed by this Tauri 2 shell; the Hermes plugin and the local dashboard remain fully usable without the shell.",
     "externalBin": ["binaries/hermes-legal-sidecar"],
