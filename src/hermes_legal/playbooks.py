@@ -72,6 +72,11 @@ Parsing rules:
   every other pattern is a case-insensitive substring.
 * Prose outside a ``###`` block is ignored, so a playbook can carry
   human notes without breaking the parser.
+* Matching is negation-aware: a mention that is negated in its own
+  sentence (``no indemnification``, ``shall not indemnify``,
+  ``in no event will a party indemnify``, ``indemnification is not
+  provided``) does not count as a match. A required clause whose only
+  mention is negated is reported missing, tied to that clause.
 """
 from __future__ import annotations
 
@@ -462,20 +467,99 @@ def split_clauses(text: str) -> list[Clause]:
 # Rule checking
 # ---------------------------------------------------------------------------
 
-def _matches(text: str, pattern: str) -> bool:
+# Negation cues. A cue before a match counts only inside the same
+# sentence segment and within a short window, so a positive mention in
+# a later sentence of the same clause is not poisoned by an earlier
+# negated one. A cue after a match counts only in a short list of
+# post-posed forms ("is not provided", ": none", "is excluded").
+_NEGATION_BEFORE_RE = re.compile(
+    r"\b(?:no|not|never|none|nor|without|excludes?|excluding)\b"
+    r"|\bother\s+than\b|n['\u2019]t\b",
+    re.IGNORECASE,
+)
+_NEGATION_AFTER_RE = re.compile(
+    r"\b(?:is|are|was|were|shall|will|does|do|did)\s+not\b"
+    r"|\bnot\s+(?:provided|included|covered|required|applicable)\b"
+    r"|:\s*none\b|\bexcluded\b|\bomitted\b",
+    re.IGNORECASE,
+)
+_SENTENCE_BREAKS = ".!?;\n"
+
+
+def _match_spans(text: str, pattern: str) -> list[tuple[int, int]]:
     pat = pattern.strip()
     if not pat:
-        return False
+        return []
     if len(pat) >= 2 and pat.startswith("/") and pat.endswith("/"):
         try:
-            return re.search(pat[1:-1], text, re.IGNORECASE) is not None
+            return [(m.start(), m.end()) for m in re.finditer(pat[1:-1], text, re.IGNORECASE)]
         except re.error:
-            return False
-    return pat.lower() in text.lower()
+            return []
+    spans: list[tuple[int, int]] = []
+    haystack = text.lower()
+    needle = pat.lower()
+    start = 0
+    while True:
+        idx = haystack.find(needle, start)
+        if idx < 0:
+            return spans
+        spans.append((idx, idx + len(needle)))
+        start = idx + max(len(needle), 1)
+
+
+def _is_negated(text: str, start: int, end: int) -> bool:
+    if text[max(0, start - 4):start].lower() in {"non-", "no-"}:
+        return True
+    seg_start = max((text.rfind(ch, 0, start) for ch in _SENTENCE_BREAKS), default=-1) + 1
+    before = text[max(seg_start, start - 80):start]
+    if _NEGATION_BEFORE_RE.search(before):
+        return True
+    seg_ends = [pos for ch in _SENTENCE_BREAKS if (pos := text.find(ch, end)) >= 0]
+    seg_end = min(seg_ends) if seg_ends else len(text)
+    after = text[end:min(seg_end, end + 60)]
+    return _NEGATION_AFTER_RE.search(after) is not None
+
+
+def _matches(text: str, pattern: str) -> bool:
+    """True when ``pattern`` has at least one non-negated mention."""
+    return any(not _is_negated(text, s, e) for s, e in _match_spans(text, pattern))
 
 
 def _any_match(text: str, patterns) -> bool:
     return any(_matches(text, p) for p in patterns)
+
+
+def _any_mention(text: str, patterns) -> bool:
+    return any(_match_spans(text, p) for p in patterns)
+
+
+def _first_match(text: str, patterns) -> str | None:
+    for pattern in patterns:
+        if _matches(text, pattern):
+            return pattern
+    return None
+
+
+def _body_text(clause: Clause) -> str:
+    """Clause content without its heading line.
+
+    Satisfaction is judged on what a clause says, not on its title:
+    a clause headed "Indemnification" whose body says there is none
+    must not satisfy an indemnification rule on the heading alone.
+    Paragraph-split clauses have no separate heading field: when a
+    paragraph's first line is itself a heading, that line is dropped
+    here for the same reason.
+    """
+    body = clause.body.strip()
+    if body and body != clause.text.strip():
+        return body
+    text = (body or clause.text).strip()
+    lines = text.splitlines()
+    if len(lines) > 1 and _heading_for(lines[0]) is not None:
+        remainder = "\n".join(lines[1:]).strip()
+        if remainder:
+            return remainder
+    return text
 
 
 def _excerpt(clause: Clause, limit: int = 240) -> str:
@@ -488,6 +572,12 @@ def _locate(clauses: list[Clause], rule: Rule) -> list[Clause]:
     return [c for c in clauses if _any_match(c.text, terms) or _any_match(c.heading, terms)]
 
 
+def _locate_mention(clauses: list[Clause], rule: Rule) -> list[Clause]:
+    """Clauses that mention a rule's terms at all, negated or not."""
+    terms = rule.search_terms
+    return [c for c in clauses if _any_mention(c.text, terms) or _any_mention(c.heading, terms)]
+
+
 def review_contract(contract_text: str, playbook: Playbook) -> ReviewResult:
     clauses = split_clauses(contract_text)
     findings: list[Finding] = []
@@ -496,15 +586,35 @@ def review_contract(contract_text: str, playbook: Playbook) -> ReviewResult:
         located = _locate(clauses, rule)
         title = rule.title or rule.id
         if rule.kind == "required":
-            if not located:
-                findings.append(Finding(
-                    rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="missing",
-                    topic=rule.topic, message=f"Required clause missing: {title}.",
-                    rationale=rule.rationale, fallback=rule.fallback,
-                ))
+            satisfied = [c for c in located if _any_match(_body_text(c), rule.search_terms)]
+            if not satisfied:
+                negated = [
+                    c for c in located
+                    if _any_mention(_body_text(c), rule.search_terms)
+                    and not _any_match(_body_text(c), rule.search_terms)
+                ]
+                if negated:
+                    target = negated[0]
+                    findings.append(Finding(
+                        rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="missing",
+                        topic=rule.topic, clause_index=target.index, clause_heading=target.heading,
+                        clause_number=target.number,
+                        message=(
+                            f"Required clause missing: {title}. The only mention in clause "
+                            f"'{target.heading}' is negated, and a negated mention does not "
+                            f"satisfy this requirement."
+                        ),
+                        rationale=rule.rationale, excerpt=_excerpt(target), fallback=rule.fallback,
+                    ))
+                else:
+                    findings.append(Finding(
+                        rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="missing",
+                        topic=rule.topic, message=f"Required clause missing: {title}.",
+                        rationale=rule.rationale, fallback=rule.fallback,
+                    ))
             elif rule.must_contain:
-                target = located[0]
-                missing = [term for term in rule.must_contain if not _matches(target.text, term)]
+                target = satisfied[0]
+                missing = [term for term in rule.must_contain if not _matches(_body_text(target), term)]
                 if missing:
                     findings.append(Finding(
                         rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="incomplete",
@@ -525,29 +635,61 @@ def review_contract(contract_text: str, playbook: Playbook) -> ReviewResult:
                 ))
         elif rule.kind == "fallback":
             if not located:
-                findings.append(Finding(
-                    rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="missing",
-                    topic=rule.topic, message=f"No clause found for fallback position: {title}.",
-                    rationale=rule.rationale, fallback=rule.fallback,
-                ))
-            else:
-                target = located[0]
-                if rule.preferred and _any_match(target.text, rule.preferred):
-                    pass  # Preferred position: no finding.
-                elif rule.acceptable and _any_match(target.text, rule.acceptable):
+                mentioned = _locate_mention(clauses, rule)
+                located_ids = {c.index for c in located}
+                negated = [c for c in mentioned if c.index not in located_ids]
+                if negated:
+                    target = negated[0]
                     findings.append(Finding(
-                        rule_id=rule.id, kind=rule.kind, severity="low", status="fallback_acceptable",
+                        rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="missing",
                         topic=rule.topic, clause_index=target.index, clause_heading=target.heading,
                         clause_number=target.number,
-                        message=f"Clause '{target.heading}' uses an acceptable fallback position for: {title}.",
+                        message=(
+                            f"No clause found for fallback position: {title}. The only mention in "
+                            f"clause '{target.heading}' is negated, and a negated mention does not "
+                            f"count as this position."
+                        ),
                         rationale=rule.rationale, excerpt=_excerpt(target), fallback=rule.fallback,
                     ))
                 else:
                     findings.append(Finding(
+                        rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="missing",
+                        topic=rule.topic, message=f"No clause found for fallback position: {title}.",
+                        rationale=rule.rationale, fallback=rule.fallback,
+                    ))
+            else:
+                target = located[0]
+                body = _body_text(target)
+                if rule.preferred and _any_match(body, rule.preferred):
+                    pass  # Preferred position: no finding.
+                elif rule.acceptable and (matched := _first_match(body, rule.acceptable)):
+                    preferred_label = ", ".join(rule.preferred) if rule.preferred else "the preferred position"
+                    findings.append(Finding(
+                        rule_id=rule.id, kind=rule.kind, severity="low", status="fallback_acceptable",
+                        topic=rule.topic, clause_index=target.index, clause_heading=target.heading,
+                        clause_number=target.number,
+                        message=(
+                            f"Clause '{target.heading}' does not use the preferred position "
+                            f"({preferred_label}) but uses an acceptable fallback position "
+                            f"({matched}) for: {title}."
+                        ),
+                        rationale=rule.rationale, excerpt=_excerpt(target), fallback=rule.fallback,
+                    ))
+                else:
+                    if rule.preferred or rule.acceptable:
+                        message = (
+                            f"Clause '{target.heading}' deviates from the approved position for: "
+                            f"{title}. It matches neither the preferred position "
+                            f"({', '.join(rule.preferred) or 'none stated'}) nor an acceptable "
+                            f"fallback position ({', '.join(rule.acceptable) or 'none stated'})."
+                        )
+                    else:
+                        message = f"Clause '{target.heading}' deviates from the approved position for: {title}."
+                    findings.append(Finding(
                         rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="deviation",
                         topic=rule.topic, clause_index=target.index, clause_heading=target.heading,
                         clause_number=target.number,
-                        message=f"Clause '{target.heading}' deviates from the approved position for: {title}.",
+                        message=message,
                         rationale=rule.rationale, excerpt=_excerpt(target), fallback=rule.fallback,
                     ))
     return ReviewResult(
