@@ -61,7 +61,7 @@ Regression scoping reason:
 
 ## User-facing release note
 
-<!-- Write for someone operating Hermes Legal, not someone reading the diff. Lead with what they can do or what no longer breaks. Group features, fixes, then technical details. State pending/draft status accurately. Write "Not applicable" for changes with no release-note impact. See docs/RELEASE-NOTES.md. -->
+<!-- Write for someone operating Hermes Legal, not someone reading the diff. Lead with what they can do or what no longer breaks. Group features, fixes, then technical details. State pending/draft status accurately. Write "Not applicable" for changes with no release-note impact. Release notes are kept in CHANGELOG.md, which Release Please maintains. -->
 
 ## Safety, compatibility and deployment
 
@@ -98,9 +98,9 @@ Variables: checked | not applicable
 Variables reason:
 
 <!-- When "checked", name each added or changed variable and its verdict per surface: -->
-<!-- - Defaults tree: present in the model/vendor defaults or settings.OPTIONAL_KEYS -->
-<!-- - Environment loader: HERMES_LEGAL__ name in .env.example and accepted by the loader, or file-only by design -->
-<!-- - Web UI catalog: field added in hermes_legal/webui/catalog.py, or a recorded no-UI verdict with the reason -->
+<!-- - Declared default: where the default lives in code (the named module and constant), or that the variable has no default and what unset means -->
+<!-- - Environment loader: the exact environment variable name as read by the code (for example HERMES_LEGAL_DATA_DIR in hermes_legal/db.py or HERMES_LEGAL_AGENT_TIER in hermes_legal/dispatch.py), or file-only by design -->
+<!-- - User surface: the CLI flag, command or desktop surface that exposes it, or a recorded no-surface verdict with the reason -->
 <!-- - Consuming code: the module or adapter that reads it, named -->
 <!-- - Docs: docs/models.md and docs/integrations.md row and any surface doc updated -->
 <!-- - Desktop packaging: installer and package manifests updated, or the follow-up named -->
