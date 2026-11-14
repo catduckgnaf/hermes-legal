@@ -1,9 +1,7 @@
-"""The dispatcher, approvals, MCP, the Hermes plugin and the local model client."""
+"""The dispatcher, approvals, MCP and the local model client."""
 import http.server
-import importlib.util
 import io
 import json
-import pathlib
 import threading
 
 import pytest
@@ -93,11 +91,9 @@ def test_bad_arguments_are_refused(world, args):
     assert code(runtime.dispatch("legal_matter_get", args, agent())) == "invalid_arguments"
 
 
-def test_every_advertised_tool_is_in_the_catalog_and_manifest():
+def test_every_advertised_tool_is_in_the_catalog():
     built = {tool["name"] for tool in runtime.available_tools()}
-    manifest = pathlib.Path(__file__).parents[1] / "hermes_plugin" / "plugin.yaml"
-    listed = {line.strip()[2:] for line in manifest.read_text(encoding="utf-8").splitlines() if line.startswith("  - legal_")}
-    assert built == listed
+    assert built
     assert built <= set(tooldefs.TOOL_NAMES)
 
 
@@ -254,65 +250,6 @@ def test_full_matter_workflow_through_mcp(world, monkeypatch):
     assert proposal["status"] == "pending_approval" and not (folder / "contract-redline.docx").exists()
     assert runtime.approve(conn, proposal["action_id"], "A. Lawyer")["status"] == "executed"
     assert docx_edit.has_track_changes((folder / "contract-redline.docx").read_bytes())
-
-
-# --------------------------------------------------------------------- plugin
-
-class FakeHermes:
-    def __init__(self):
-        self.tools, self.hooks = {}, {}
-
-    def register_tool(self, **kwargs):
-        self.tools[kwargs["name"]] = kwargs
-
-    def register_hook(self, name, callback):
-        self.hooks[name] = callback
-
-
-def load_plugin():
-    path = pathlib.Path(__file__).parents[1] / "hermes_plugin" / "__init__.py"
-    spec = importlib.util.spec_from_file_location("hl_plugin_under_test", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_plugin_registers_nothing_without_a_checkout(monkeypatch):
-    monkeypatch.delenv("HERMES_LEGAL_APP_DIR", raising=False)
-    ctx = FakeHermes()
-    load_plugin().register(ctx)
-    assert ctx.tools == {} and ctx.hooks == {}
-
-
-def plugged(monkeypatch):
-    monkeypatch.setenv("HERMES_LEGAL_APP_DIR", str(pathlib.Path(__file__).parents[1]))
-    ctx = FakeHermes()
-    load_plugin().register(ctx)
-    return ctx
-
-
-def test_plugin_tools_follow_the_dispatcher_rules(world, monkeypatch):
-    ctx = plugged(monkeypatch)
-    assert set(ctx.tools) == {tool["name"] for tool in runtime.available_tools()}
-    assert ctx.tools["legal_doc_read"]["schema"]["parameters"]["required"] == ["matter_id", "path"]
-    read = ctx.tools["legal_doc_read"]["handler"]
-    assert code(json.loads(read({"matter_id": 1, "path": "note.txt"}))) == "agent_tier_undeclared"
-    monkeypatch.setenv(runtime.AGENT_TIER_ENV, "LOCAL_ONLY")
-    assert json.loads(read({"matter_id": 1, "path": "note.txt"}))["ok"]
-
-
-def test_plugin_refuses_writes_in_scheduled_sessions(world, monkeypatch):
-    conn, *_ = world
-    monkeypatch.setenv(runtime.AGENT_TIER_ENV, "LOCAL_ONLY")
-    ctx = plugged(monkeypatch)
-    guard = ctx.hooks["pre_tool_call"]
-    assert guard(tool_name="legal_doc_redline", session_id="live") is None
-    ctx.hooks["pre_llm_call"](session_id="job", platform="cron")
-    assert guard(tool_name="legal_doc_redline", session_id="job")["action"] == "block"
-    assert guard(tool_name="legal_doc_read", session_id="job") is None
-    outcome = json.loads(ctx.tools["legal_doc_redline"]["handler"](REDLINE, session_id="job"))
-    assert code(outcome) == "refused_unattended"
-    assert runtime.list_actions(conn) == []
 
 
 # ---------------------------------------------------------------- local model
