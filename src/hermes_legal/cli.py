@@ -234,7 +234,7 @@ def main(argv=None, *, cite_resolver=None):
             print(row)
         return 0
     if args.cmd == "serve":
-        print("Dashboard is a v1 build item; the CLI, plugin and MCP tools work today.")
+        print("Dashboard is a v1 build item; the CLI and MCP tools work today.")
         print(f"Would bind 127.0.0.1:{args.port} only (local access mode).")
         return 0
     if args.cmd == "doc-compare":
