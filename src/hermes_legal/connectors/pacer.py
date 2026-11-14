@@ -37,6 +37,11 @@ PACER_AUTH_URL = "https://pacer.uscourts.gov/services/cso-auth"
 PACER_CASE_LOCATOR_BASE = "https://pcl.uscourts.gov/pcl-public-api/rest"
 
 
+def _case_key(case_number) -> str:
+    """A case number normalized for the per-case RECAP gate."""
+    return " ".join(str(case_number or "").split()).casefold()
+
+
 class PacerAuthError(RuntimeError):
     """Raised when the PACER authentication service rejects a login."""
 
@@ -132,6 +137,9 @@ class PacerConnector(BaseConnector):
         self.case_locator_base_url = case_locator_base_url.rstrip("/")
         self._recap_candidates: tuple | None = None  # None until a RECAP check runs
         self._recap_checked = False
+        # Case numbers whose RECAP check has run. A paid case search is
+        # gated per case: checking case A never unlocks a paid search for B.
+        self._recap_checked_cases: set[str] = set()
         self._auth_token: str | None = None  # in memory only; never written to disk
 
     def required_credentials(self):
@@ -178,6 +186,7 @@ class PacerConnector(BaseConnector):
         self.require_enabled(matter_id)
         hits = self.recap.search_recap(case_number, matter_id=matter_id)
         self._recap_checked = True
+        self._recap_checked_cases.add(_case_key(case_number))
         self._recap_candidates = tuple(hits)
         if hits:
             return LookupResult(source="recap", found=False, candidates=tuple(hits),
@@ -193,17 +202,18 @@ class PacerConnector(BaseConnector):
                            estimated_pages: int = 10, matter_id=None):
         """Paid Case Locator search by case number, behind the RECAP gate.
 
-        Refused unless a RECAP check ran first (through
-        :meth:`locate_case` or :meth:`lookup_document`) and a named
+        Refused unless :meth:`locate_case` ran a RECAP check for this
+        same case number first (a check of another case, or a free-text
+        :meth:`lookup_document` query, does not count) and a named
         human approved after seeing the cost estimate. Authenticates
         through :meth:`authenticate` when no token is cached.
         """
         self.require_enabled(matter_id, send=True)
-        if not self._recap_checked:
+        if _case_key(case_number) not in self._recap_checked_cases:
             raise RecapCheckRequired(
-                "PACER case search refused: no RECAP check has been run on this "
-                "connector; run locate_case first so the free archive is checked "
-                "before any paid path")
+                f"PACER case search refused: no RECAP check has been run for case "
+                f"{case_number!r}; run locate_case for this case first so the free "
+                "archive is checked before any paid path")
         if not approved_by or not str(approved_by).strip():
             raise ApprovalRequired(
                 "PACER charges per page: pass approved_by naming the human who approved "

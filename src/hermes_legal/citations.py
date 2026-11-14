@@ -56,6 +56,7 @@ tests marked ``live`` only.
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -114,7 +115,7 @@ GOVINFO_API_KEY_ENV = (
 #: The U.S. Code edition the govinfo package ids name. The link service
 #: itself always resolves to the current text; the edition is used only
 #: to build the package id reported alongside a result.
-GOVINFO_USCODE_EDITION = 2023
+GOVINFO_USCODE_EDITION = 2024
 
 # ---------------------------------------------------------------------------
 # Reporters
@@ -217,7 +218,9 @@ CITE_RE = _CITE_RE
 
 _STATUTE_RE = re.compile(
     r"\b(?P<title>\d{1,3})\s+U\.\s*S\.\s*C\.\s*"
-    r"(?:§+\s*)?(?P<section>[\d]+(?:\.[\d]+)?(?:\([a-z0-9]+\))*)"
+    # A section number keeps its letter suffixes and hyphenated parts
+    # (2000e-2, 78j, 1396a): truncating them names a different section.
+    r"(?:§+\s*)?(?P<section>\d+[a-z]*(?:-\d+[a-z]*)*(?:\.\d+)?(?:\([a-z0-9]+\))*)"
     r"(?:\s*\((?P<year>\d{4})\))?"
 )
 
@@ -638,7 +641,10 @@ class CourtListenerClient:
             if not text:
                 continue
             if text.startswith("http"):
-                urls.append(text)
+                # The token rides on this request, so only follow URLs on
+                # CourtListener's own host; anything else is ignored.
+                if urllib.parse.urlparse(text).hostname == urllib.parse.urlparse(self.base_url).hostname:
+                    urls.append(text)
             elif text.startswith("/"):
                 urls.append("https://www.courtlistener.com" + text)
             elif text.isdigit():
@@ -726,7 +732,10 @@ def _clusters_from_payload(payload: Any) -> list[dict[str, Any]]:
 
 
 def _strip_html(text: str) -> str:
-    return re.sub(r"<[^>]+>", " ", text)
+    # Unescape entities too: opinion and statute HTML writes quotation
+    # marks and section signs as entities (&#8220;, &sect;), and a quote
+    # check against the raw entities would miss text that is there.
+    return html.unescape(re.sub(r"<[^>]+>", " ", text))
 
 
 def _opinion_text_from_body(body: str) -> str:
@@ -829,16 +838,27 @@ def govinfo_package_id(title: int, edition: int = GOVINFO_USCODE_EDITION) -> str
 
 
 def govinfo_section_root(section: str) -> str:
-    """The section number a govinfo link resolves: ``501(c)(3)`` -> ``501``."""
-    match = re.match(r"[\d]+(?:\.[\d]+)?[a-z]*", str(section or "").strip())
+    """The section number a govinfo link resolves: ``501(c)(3)`` -> ``501``.
+
+    Only subsection parentheticals are dropped. Letter suffixes and
+    hyphenated parts are part of the section number (``2000e-2``,
+    ``78j``), and truncating them would look up a different, real
+    section and report the cited one as existing.
+    """
+    match = re.match(r"\d+[a-z]*(?:-\d+[a-z]*)*(?:\.\d+)?", str(section or "").strip())
     return match.group(0) if match else str(section or "").strip()
 
 
 def parse_govinfo_package_summary(payload: Any, title: int) -> bool:
-    """True when a govinfo package-summary payload names the title's package."""
+    """True when a govinfo package-summary payload names the title's package.
+
+    Any U.S. Code edition counts: govinfo publishes a new edition package
+    each year, and the title is what identifies the statute.
+    """
     if not isinstance(payload, dict):
         return False
-    return str(payload.get("packageId") or "") == govinfo_package_id(title)
+    return re.fullmatch(rf"USCODE-\d{{4}}-title{int(title)}",
+                        str(payload.get("packageId") or "")) is not None
 
 
 class GovInfoClient:
@@ -904,7 +924,36 @@ class GovInfoClient:
         request = urllib.request.Request(url, headers={"Accept": "text/html"}, method="GET")
         with self._opener(request, timeout=self.timeout) as response:
             body = response.read().decode("utf-8", errors="replace")
+            geturl = getattr(response, "geturl", None)
+            self._last_url = str(geturl() or "") if callable(geturl) else ""
         return _strip_html(body)
+
+    _last_url = ""
+
+    @staticmethod
+    def _resolved_section_mismatch(final_url: str, cite: Citation) -> str | None:
+        """Why the page govinfo redirected to is not the cited section, or None.
+
+        The link service redirects to ``.../USCODE-<ed>-title<N>/html/
+        ...-sec<section>.htm``. When the final URL is known it must name
+        the cited title and section exactly; otherwise the lookup proved
+        a different section exists, not this one.
+        """
+        if not final_url or "/content/pkg/" not in final_url:
+            return None
+        path = urllib.parse.urlparse(final_url).path.casefold()
+        title_ok = f"-title{cite.volume}/" in path
+        section_ok = path.endswith(f"-sec{govinfo_section_root(cite.section or '').casefold()}.htm")
+        if title_ok and section_ok:
+            return None
+        return (f"govinfo resolved this citation to a different page ({final_url}), "
+                "not the cited section, so the citation was not verified.")
+
+    def _package_from_url(self, final_url: str, title: int) -> str:
+        match = re.search(r"USCODE-(\d{4})-title(\d+)", final_url or "")
+        if match and int(match.group(2)) == title:
+            return f"USCODE-{match.group(1)}-title{title}"
+        return govinfo_package_id(title, self.edition)
 
     def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
         key = _display(citation)
@@ -921,6 +970,17 @@ class GovInfoClient:
                     citation=key, status="not_found", source=self.name,
                     detail="govinfo found no such U.S. Code section at the link service.",
                     source_url=self.link_url(cite))
+            if exc.code == 400:
+                # The live link service answers a section it does not have
+                # with HTTP 400 ("Link Service Error"), not 404. That can
+                # also mean the request itself was malformed, so it stays
+                # unverified (blocking, and attestable) rather than a
+                # not_found that no attestation could ever override.
+                return VerificationResult(
+                    citation=key, status="unverified", source=self.name,
+                    detail="govinfo's link service has no section matching this citation "
+                           "(HTTP 400); it likely does not exist as cited. Not verified.",
+                    source_url=self.link_url(cite))
             return VerificationResult(
                 citation=key, status="unverified", source=self.name,
                 detail=f"govinfo lookup failed (HTTP {exc.code}); the citation was not checked.")
@@ -929,7 +989,12 @@ class GovInfoClient:
                 citation=key, status="unverified", source=self.name,
                 detail=f"govinfo lookup could not be completed ({type(exc).__name__}); "
                        "the citation was not checked.")
-        package = govinfo_package_id(cite.volume or 0, self.edition)
+        mismatch = self._resolved_section_mismatch(self._last_url, cite)
+        if mismatch:
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name, detail=mismatch,
+                source_url=self.link_url(cite))
+        package = self._package_from_url(self._last_url, cite.volume or 0)
         status = "exists"
         detail = f"govinfo resolved this section (package {package})."
         if quote and text.strip():

@@ -507,17 +507,35 @@ def _match_spans(text: str, pattern: str) -> list[tuple[int, int]]:
         start = idx + max(len(needle), 1)
 
 
-def _is_negated(text: str, start: int, end: int) -> bool:
+def _is_negated(text: str, start: int, end: int, *, before_re=None) -> bool:
+    before_re = before_re or _NEGATION_BEFORE_RE
     if text[max(0, start - 4):start].lower() in {"non-", "no-"}:
         return True
     seg_start = max((text.rfind(ch, 0, start) for ch in _SENTENCE_BREAKS), default=-1) + 1
     before = text[max(seg_start, start - 80):start]
-    if _NEGATION_BEFORE_RE.search(before):
+    if before_re.search(before):
         return True
     seg_ends = [pos for ch in _SENTENCE_BREAKS if (pos := text.find(ch, end)) >= 0]
     seg_end = min(seg_ends) if seg_ends else len(text)
     after = text[end:min(seg_end, end + 60)]
     return _NEGATION_AFTER_RE.search(after) is not None
+
+
+# For a must_contain element, "without" states a condition on the action
+# ("without the prior written consent") rather than excluding the element,
+# so it is not a negation cue there. "not", "no", "excluding" still are
+# ("does not cover oral disclosures" lacks the oral element).
+_ELEMENT_NEGATION_BEFORE_RE = re.compile(
+    r"\b(?:no|not|never|none|nor|excludes?|excluding)\b"
+    r"|\bother\s+than\b|n['\u2019]t\b",
+    re.IGNORECASE,
+)
+
+
+def _element_present(text: str, term: str) -> bool:
+    """True when a must_contain element has a mention that is not excluded."""
+    return any(not _is_negated(text, s, e, before_re=_ELEMENT_NEGATION_BEFORE_RE)
+               for s, e in _match_spans(text, term))
 
 
 def _matches(text: str, pattern: str) -> bool:
@@ -614,7 +632,7 @@ def review_contract(contract_text: str, playbook: Playbook) -> ReviewResult:
                     ))
             elif rule.must_contain:
                 target = satisfied[0]
-                missing = [term for term in rule.must_contain if not _matches(_body_text(target), term)]
+                missing = [term for term in rule.must_contain if not _element_present(_body_text(target), term)]
                 if missing:
                     findings.append(Finding(
                         rule_id=rule.id, kind=rule.kind, severity=rule.severity, status="incomplete",

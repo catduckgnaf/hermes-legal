@@ -12,6 +12,10 @@ the CLI enforces, with no side door:
   dashboard equivalent of the CLI's interactive typed confirmation.
 - A server started with ``--unattended`` cannot propose a write and cannot
   decide one, exactly like an unattended dispatch context.
+- Decisions also need ``legal serve`` to have been started from an
+  interactive terminal, the same rule as the CLI's approval prompt. An
+  agent with a shell could otherwise start the server in the background,
+  read the token from its output, and approve its own proposals.
 
 Access is local by construction. The server binds 127.0.0.1 unless an
 explicit ``--allow-non-loopback`` override is given (which prints a loud
@@ -32,6 +36,7 @@ import ipaddress
 import json
 import pathlib
 import secrets
+import sys
 import urllib.parse
 
 from . import db, dispatch as runtime, providers
@@ -40,6 +45,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8770
 TOKEN_HEADER = "X-Hermes-Legal-Token"
 LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+MAX_FORM_BYTES = 1_000_000
 
 _CSS = (
     "body{font-family:system-ui,sans-serif;margin:2rem auto;max-width:56rem;padding:0 1rem}"
@@ -93,10 +99,12 @@ def default_ask(conn, matter_id: int, question: str) -> dict:
 class _Dashboard:
     """The state one running dashboard server carries."""
 
-    def __init__(self, *, db_path, token, unattended=False, ask_handler=None):
+    def __init__(self, *, db_path, token, unattended=False, ask_handler=None,
+                 allow_decisions=True):
         self.db_path = pathlib.Path(db_path) if db_path else db.default_path()
         self.token = token
         self.unattended = unattended
+        self.allow_decisions = allow_decisions
         self.ask_handler = ask_handler or default_ask
 
     # ------------------------------------------------------------ plumbing
@@ -211,6 +219,9 @@ class _Dashboard:
         body = "<h2>Pending actions</h2>" + ("".join(blocks) or "<p>Nothing is waiting for approval.</p>")
         if self.unattended:
             body += '<p class="warn">This server runs unattended: write proposals and decisions are refused.</p>'
+        elif not self.allow_decisions:
+            body += ('<p class="warn">This server was not started from an interactive terminal: '
+                     "decisions are refused here.</p>")
         return 200, self._page("Pending actions", body)
 
     # -------------------------------------------------------------- actions
@@ -234,6 +245,13 @@ class _Dashboard:
                 "Refused unattended",
                 '<p class="err">refused_unattended: this server runs unattended, '
                 "so it cannot decide a pending action.</p>")
+        if not self.allow_decisions:
+            return 403, self._page(
+                "Refused without a terminal",
+                '<p class="err">needs_interactive_terminal: this server was not started '
+                "from an interactive terminal, so it cannot decide a pending action. "
+                "Restart <code>legal serve</code> in a terminal, or decide it with "
+                "<code>legal actions approve</code>.</p>")
         try:
             action_id = int(form.get("id", ""))
         except ValueError:
@@ -310,7 +328,8 @@ class _Dashboard:
 
 def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, db_path=None,
                 token: str | None = None, unattended: bool = False, ask_handler=None,
-                allow_non_loopback: bool = False) -> http.server.ThreadingHTTPServer:
+                allow_non_loopback: bool = False,
+                allow_decisions: bool = True) -> http.server.ThreadingHTTPServer:
     """Build (but do not start) the dashboard server.
 
     Refuses a non-loopback ``host`` unless ``allow_non_loopback`` is set.
@@ -323,7 +342,8 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, db_path=N
             "pass --allow-non-loopback to override, and understand that the token "
             "is then the only access control")
     dashboard = _Dashboard(db_path=db_path, token=token or new_token(),
-                           unattended=unattended, ask_handler=ask_handler)
+                           unattended=unattended, ask_handler=ask_handler,
+                           allow_decisions=allow_decisions)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -383,7 +403,14 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, db_path=N
             self._route(None)
 
         def do_POST(self):
-            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                length = -1
+            if length < 0 or length > MAX_FORM_BYTES:
+                self._send(413 if length > 0 else 400, dashboard._page(
+                    "Bad request", '<p class="err">The form body is missing a valid size or is too large.</p>'))
+                return
             raw = self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
             form = {key: values[0] for key, values in urllib.parse.parse_qs(raw).items()}
             # A form may carry the token as a field instead of in the URL.
@@ -405,8 +432,15 @@ def make_server(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, db_path=N
 def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, *, db_path=None,
           allow_non_loopback: bool = False, unattended: bool = False) -> int:
     """Run the dashboard until interrupted; return a process exit code."""
+    # Approval needs a person, as at the CLI: a server started without an
+    # interactive terminal (by an agent, a script, a service) cannot decide.
+    interactive = bool(getattr(sys.stdin, "isatty", lambda: False)())
     server = make_server(host, port, db_path=db_path, unattended=unattended,
-                         allow_non_loopback=allow_non_loopback)
+                         allow_non_loopback=allow_non_loopback,
+                         allow_decisions=interactive)
+    if not interactive:
+        print("Not started from an interactive terminal: pending actions can be viewed "
+              "here but not approved or rejected.")
     bound_host, bound_port = server.server_address[:2]
     if not is_loopback_host(bound_host):
         print("*** WARNING: dashboard is bound to a NON-LOOPBACK address. ***")

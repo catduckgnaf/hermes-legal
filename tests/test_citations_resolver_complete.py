@@ -65,7 +65,7 @@ def _govinfo_client(calls):
 
 
 def test_govinfo_package_helpers():
-    assert govinfo_package_id(42) == "USCODE-2023-title42"
+    assert govinfo_package_id(42) == "USCODE-2024-title42"
     assert govinfo_section_root("1983") == "1983"
     assert govinfo_section_root("501(c)(3)") == "501"
     summary = _load("govinfo_package_title42.json")
@@ -79,7 +79,7 @@ def test_govinfo_known_statute_exists():
     assert result.status == "exists"
     assert result.checked is True
     assert result.source == "govinfo"
-    assert "USCODE-2023-title42" in result.detail
+    assert "USCODE-2024-title42" in result.detail
     assert calls and "/link/uscode/42/1983" in calls[0]
 
 

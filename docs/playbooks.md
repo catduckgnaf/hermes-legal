@@ -89,7 +89,9 @@ notes without breaking the parser.
   mention in its body, the finding status is `missing`. If a clause
   matches but a `must_contain` element is absent (or present only in
   negated form), the status is `incomplete` and the finding names
-  that clause.
+  that clause. For `must_contain` elements, `without` is not a
+  negation cue: in "without the prior written consent" the element
+  `written` is present, and the phrase states a condition.
 - `forbidden` — every clause that matches `patterns` with a
   non-negated mention produces a `forbidden` finding tied to that
   clause, with an excerpt.
@@ -115,6 +117,16 @@ negated is reported `missing`, tied to the clause carrying the
 negated mention, and the finding says the mention is negated. A
 positive mention in a later sentence of the same clause still
 counts: negation in one sentence does not poison the next.
+
+Known limit: a regular expression cannot tell what a negation
+governs. "In no event shall either party's aggregate liability exceed
+the fees paid" is standard cap language, but "no" precedes "aggregate
+liability" in the same sentence, so a required liability-cap rule
+whose only pattern is `aggregate liability` reports it `missing`. This
+errs toward flagging, and the finding says the mention looked negated,
+so a reviewer can see why. Give such rules a pattern the cap language
+uses positively, such as `liability shall not exceed` (a pattern that
+itself contains the negation is matched as written).
 
 Satisfaction is judged on a clause's body, not its heading, so a
 clause titled "Indemnification" whose body grants none is not
