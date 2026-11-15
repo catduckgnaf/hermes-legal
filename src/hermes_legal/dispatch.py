@@ -25,7 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import citations, db, deadlines, docx_edit, matters, pdf_tools, playbooks, providers, tooldefs, watcher
+from . import analysis, citations, db, deadlines, docx_edit, matters, pdf_tools, playbooks, providers, tooldefs, watcher
 
 AGENT_SURFACES = ("mcp",)
 AGENT_TIER_ENV = "HERMES_LEGAL_AGENT_TIER"
@@ -318,6 +318,31 @@ def _time_log(ctx: Context, args: dict) -> dict:
     return {"time_entry_id": cur.lastrowid}
 
 
+def _chronology(ctx: Context, args: dict) -> dict:
+    result = analysis.build_chronology(
+        ctx.conn,
+        args["matter_id"],
+        relative_path=args.get("path"),
+        limit=args.get("limit", 100),
+        resolve_file=lambda mid, rel: _matter_file(ctx, mid, rel),
+        segment_reader=read_segments,
+    )
+    result["note"] = f"Deterministic date extraction only; verify events against source documents. {UNTRUSTED_NOTE}"
+    return result
+
+
+def _intake_summary(ctx: Context, args: dict) -> dict:
+    result = analysis.build_intake_summary(
+        ctx.conn,
+        args["matter_id"],
+        relative_path=args.get("path"),
+        resolve_file=lambda mid, rel: _matter_file(ctx, mid, rel),
+        segment_reader=read_segments,
+    )
+    result["note"] = f"Deterministic intake summary from on-disk documents; verify all details. {UNTRUSTED_NOTE}"
+    return result
+
+
 # ------------------------------------------------------------------ the registry
 
 STR, INT, BOOL = {"type": "string"}, {"type": "integer", "minimum": 0}, {"type": "boolean"}
@@ -352,6 +377,8 @@ IMPLS: dict[str, Impl] = {
         paragraphs={"type": "array", "items": STR}), True, _redline_precheck),
     "legal_deadline_extract": Impl(_deadline_extract, _schema(**SOURCE), True),
     "legal_deadline_calc": Impl(_deadline_calc, _schema(("rule_id", "trigger_date"), rule_id=STR, trigger_date=STR, service_method=STR)),
+    "legal_chronology": Impl(_chronology, _schema(("matter_id",), matter_id=MATTER, path=STR, limit=INT), True),
+    "legal_intake_summary": Impl(_intake_summary, _schema(("matter_id",), matter_id=MATTER, path=STR), True),
     "legal_time_log": Impl(_time_log, _schema(("matter_id", "minutes", "description"), matter_id=MATTER, minutes={"type": "integer", "minimum": 1, "maximum": 1440}, description=STR), True, _time_precheck),
 }
 
