@@ -25,7 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import analysis, citations, db, deadlines, docx_edit, matters, pdf_tools, playbooks, providers, tooldefs, watcher
+from . import analysis, citations, db, deadlines, docx_edit, efile, matters, pdf_tools, playbooks, providers, tooldefs, watcher
 
 AGENT_SURFACES = ("mcp",)
 AGENT_TIER_ENV = "HERMES_LEGAL_AGENT_TIER"
@@ -341,6 +341,55 @@ def _intake_summary(ctx: Context, args: dict) -> dict:
     )
     result["note"] = f"Deterministic intake summary from on-disk documents; verify all details. {UNTRUSTED_NOTE}"
     return result
+def _manifest_relpath(output_rel: str) -> str:
+    return output_rel[:-4] + ".manifest.json" if output_rel.lower().endswith(".pdf") else output_rel + ".manifest.json"
+
+
+def _efile_inputs(ctx: Context, args: dict) -> list[tuple[str, pathlib.Path]]:
+    docs = args.get("documents") or []
+    if not docs:
+        raise ToolError("invalid_arguments", "documents must contain at least one PDF path")
+    if not args["output"].lower().endswith(".pdf"):
+        raise ToolError("invalid_arguments", "output must be a .pdf path")
+    resolved: list[tuple[str, pathlib.Path]] = []
+    for rel in docs:
+        if not rel.lower().endswith(".pdf"):
+            raise ToolError("invalid_arguments", f"e-filing bundle inputs must be PDFs: {rel}")
+        resolved.append((rel, _matter_file(ctx, args["matter_id"], rel)))
+    if _matter_file(ctx, args["matter_id"], args["output"], must_exist=False).exists():
+        raise ToolError("output_exists", f"e-filing bundle never overwrites a file: {args['output']}")
+    manifest_rel = _manifest_relpath(args["output"])
+    if _matter_file(ctx, args["matter_id"], manifest_rel, must_exist=False).exists():
+        raise ToolError("output_exists", f"e-filing manifest already exists: {manifest_rel}")
+    return resolved
+
+
+def _efile_precheck(ctx: Context, args: dict) -> None:
+    inputs = _efile_inputs(ctx, args)
+    attestations = citations.load_attestations(ctx.conn)
+    try:
+        efile.check_bundle_inputs(inputs, resolver=ctx.resolver, attestations=attestations)
+    except ValueError as exc:
+        raise ToolError("citation_gate_blocked", str(exc)) from exc
+
+
+def _efile_bundle(ctx: Context, args: dict) -> dict:
+    inputs = _efile_inputs(ctx, args)
+    attestations = citations.load_attestations(ctx.conn)
+    bundle_bytes, manifest = efile.build_efile_bundle(inputs, resolver=ctx.resolver, attestations=attestations)
+    pdf_result = watcher.write_document(ctx.conn, args["matter_id"], args["output"], bundle_bytes)
+    manifest_rel = _manifest_relpath(args["output"])
+    manifest_result = watcher.write_document(ctx.conn, args["matter_id"], manifest_rel, efile.format_manifest_json(manifest))
+    return {
+        "status": "prepared",
+        "output": pdf_result.path,
+        "manifest": manifest_result.path,
+        "total_pages": manifest["total_pages"],
+        "bundle_sha256": manifest["bundle_sha256"],
+        "documents": manifest["documents"],
+        "filed": False,
+        "note": manifest["note"],
+    }
 
 
 # ------------------------------------------------------------------ the registry
@@ -380,6 +429,12 @@ IMPLS: dict[str, Impl] = {
     "legal_chronology": Impl(_chronology, _schema(("matter_id",), matter_id=MATTER, path=STR, limit=INT), True),
     "legal_intake_summary": Impl(_intake_summary, _schema(("matter_id",), matter_id=MATTER, path=STR), True),
     "legal_time_log": Impl(_time_log, _schema(("matter_id", "minutes", "description"), matter_id=MATTER, minutes={"type": "integer", "minimum": 1, "maximum": 1440}, description=STR), True, _time_precheck),
+    "legal_efile_bundle": Impl(_efile_bundle, _schema(
+        ("matter_id", "documents", "output"),
+        matter_id=MATTER,
+        documents={"type": "array", "items": STR},
+        output=STR,
+    ), True, _efile_precheck),
 }
 
 TOOLS_BY_NAME = {tool.name: tool for tool in tooldefs.TOOLS}
