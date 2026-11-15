@@ -7,12 +7,11 @@
 //! instead of pinning one loopback origin. The shell itself stays
 //! minimal and owns no client or legal logic.
 //!
-//! The shell owns no legal logic. It starts the Python core as a sidecar
-//! process (`legal serve`, which binds 127.0.0.1:8770 only) and loads the
-//! local dashboard that the sidecar serves. If the sidecar cannot start,
-//! the shell still opens and says so: the Hermes plugin and the dashboard
-//! remain usable without the shell, so a sidecar failure must never take
-//! the rest of the product down with it.
+//! The shell also starts the Python core as a sidecar process
+//! (`legal serve`, which binds 127.0.0.1:8770 only). This provides the
+//! local dashboard independently of the Hermes client UI. If the
+//! sidecar cannot start, the shell still opens and says so: the Hermes
+//! connection and a separately started `legal serve` remain usable.
 //!
 //! The signed updater plugin is deliberately not registered yet. Tauri's
 //! updater verifies every update against a public key held in
@@ -32,6 +31,8 @@ pub fn run() {
             // Spawn the Python sidecar. The binary name matches
             // `bundle.externalBin` in tauri.conf.json; Tauri resolves the
             // target-triple-suffixed file placed next to the shell binary.
+            // The desktop workflow packages the real Python core with
+            // PyInstaller before this build.
             match app
                 .shell()
                 .sidecar("hermes-legal-sidecar")
@@ -41,8 +42,8 @@ pub fn run() {
                     if let Err(err) = command.spawn() {
                         eprintln!(
                             "hermes-legal: Python sidecar failed to start ({err}); \
-                             the dashboard is unavailable in this window, but the \
-                             Hermes plugin and a separately started `legal serve` \
+                             the local dashboard is unavailable in this window, but the \
+                             Hermes client and a separately started `legal serve` \
                              are unaffected."
                         );
                     }

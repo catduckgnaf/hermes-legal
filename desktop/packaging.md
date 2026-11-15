@@ -39,15 +39,23 @@ dispatched by hand (`workflow_dispatch`): it builds the shell on
 `windows-latest` and `ubuntu-latest` and uploads the bundle artifacts
 for smoke testing.
 
-Two build inputs are still scaffold placeholders, and artifacts built
-with them are never a release:
+The Python core is packaged as a real one-file sidecar executable
+(via PyInstaller) during the desktop workflow on every platform the
+workflow builds. The resulting file is named with the exact target
+triple Tauri expects (`hermes-legal-sidecar-<triple>[.exe]`) and
+placed in `src-tauri/binaries/` before `cargo tauri build`. A build
+that produces this sidecar can start `legal serve` from the shell.
+Artifacts remain unsigned smoke builds until the signing secrets are
+configured.
 
-- The sidecar file is staged as a placeholder with the target-triple
-  name Tauri expects. Packaging the Python core as one executable per
-  target replaces it.
+Two remaining build inputs are still scaffold placeholders for signed
+releases, and artifacts built without them are never a release:
+
 - The updater public key in `tauri.conf.json` is empty, and the shell
   does not register the updater plugin yet (see `src/lib.rs`). Both land
   with the first signed release, when the key exists.
+- Code-signing secrets (see below) are required for any published
+  installer.
 
 ## Code signing: required secrets, nothing committed
 
@@ -113,9 +121,9 @@ modules.
 - [x] Flatpak manifest with the network permission documented and justified
 - [x] winget manifest set for the signed installers
 - [x] Desktop workflow: manually triggered full build for Windows and Linux, plus pull-request client tests and an unsigned Windows build
+- [x] Python core packaged as a real per-target sidecar executable (PyInstaller in desktop workflow)
 - [ ] Windows code-signing certificate or Azure Trusted Signing secret configured
 - [ ] Updater signing key generated, public key committed, updater plugin registered
-- [ ] Python core packaged as a real per-target sidecar executable
 - [ ] Signed auto-update bundles verified on both platforms
 - [ ] Clean Windows install and clean Linux install pass `legal doctor` and open the demo matter
 - [ ] Fidelity corpus rendered and compared on Windows and Linux in CI
