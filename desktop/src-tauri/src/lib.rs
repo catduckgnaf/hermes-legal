@@ -9,7 +9,8 @@
 //!
 //! The shell also starts the Python core as a sidecar process
 //! (`legal serve`, which binds 127.0.0.1:8770 only). This provides the
-//! local dashboard independently of the Hermes client UI. If the
+//! local dashboard independently of the Hermes client UI. The child
+//! is tracked so it is terminated when the shell exits. If the
 //! sidecar cannot start, the shell still opens and says so: the Hermes
 //! connection and a separately started `legal serve` remain usable.
 //!
@@ -21,7 +22,12 @@
 //! failure path nobody tests. Registration lands with the first signed
 //! release build, together with the `TAURI_SIGNING_PRIVATE_KEY` secret.
 
+use std::sync::Mutex;
+use tauri::Manager;
+use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
+
+struct SidecarChild(Mutex<Option<CommandChild>>);
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -39,13 +45,20 @@ pub fn run() {
             {
                 Ok(command) => {
                     let command = command.args(["serve", "--port", "8770"]);
-                    if let Err(err) = command.spawn() {
-                        eprintln!(
-                            "hermes-legal: Python sidecar failed to start ({err}); \
-                             the local dashboard is unavailable in this window, but the \
-                             Hermes client and a separately started `legal serve` \
-                             are unaffected."
-                        );
+                    match command.spawn() {
+                        Ok((rx, child)) => {
+                            // Drop the receiver; we only need the child handle for cleanup.
+                            drop(rx);
+                            app.manage(SidecarChild(Mutex::new(Some(child))));
+                        }
+                        Err(err) => {
+                            eprintln!(
+                                "hermes-legal: Python sidecar failed to start ({err}); \
+                                 the local dashboard is unavailable in this window, but the \
+                                 Hermes client and a separately started `legal serve` \
+                                 are unaffected."
+                            );
+                        }
                     }
                 }
                 Err(err) => {
@@ -56,6 +69,17 @@ pub fn run() {
                 }
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.app_handle().try_state::<SidecarChild>() {
+                    if let Ok(mut guard) = state.0.lock() {
+                        if let Some(child) = guard.take() {
+                            let _ = child.kill();
+                        }
+                    }
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running the hermes-legal desktop shell");
