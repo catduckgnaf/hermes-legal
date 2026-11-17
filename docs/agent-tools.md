@@ -45,7 +45,7 @@ An action runs at most once. If it fails, propose it again. MCP clients cannot s
 uv run legal ask 1 "When does the lease end?" --model qwen3:8b
 ```
 
-Only a loopback address is accepted. The default is `http://127.0.0.1:11434/v1`; change it with `HERMES_LEGAL_LOCAL_BASE_URL`. Ollama model tags that run in its cloud are refused by name. Each call is logged with a hash of the exact prompt.
+Only a loopback address is accepted. The default is `http://127.0.0.1:11434/v1`; change it with `HERMES_LEGAL_LOCAL_BASE_URL`. Ollama model tags that run in its cloud are refused by name. The address is checked again at connect time, so a name that stops resolving to this computer is refused before anything is sent. Each call is logged with a hash of the exact bytes sent, the fingerprint of the approved preview and the endpoint the bytes went to.
 
 ## Citation lookups
 
