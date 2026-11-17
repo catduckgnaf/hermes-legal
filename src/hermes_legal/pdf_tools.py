@@ -420,18 +420,226 @@ def redact_pdf(pdf_bytes: bytes, phrases: list[str]) -> RedactionResult:
     plan = locate_redactions(document, phrases)
     redacted = apply_redaction_to_text(document, phrases)
     output = build_text_pdf([p.text for p in redacted.pages], page_sizes=sizes)
-    verification = verify_redaction(extract_text_layer(output), phrases)
-    # Byte-level backstop: no phrase may survive in the raw rebuilt bytes
-    # either, in its original or case-folded form.
-    if verification.passed:
-        lowered = output.lower()
-        survivors = [p for p in phrases if p and p.encode("cp1252", "replace").lower() in lowered]
-        if survivors:
-            verification = RedactionVerification(
-                passed=False, remaining=verification.remaining,
-                normalized_remaining=survivors)
+    # Whole-file audit of the rebuilt bytes: text layer, raw bytes, decoded
+    # streams, string values and revision count. Anything blocking fails it.
+    audit = audit_redacted_pdf(output, phrases)
+    verification = audit.text_layer
+    if not audit.passed and verification.passed:
+        verification = RedactionVerification(
+            passed=False, remaining=verification.remaining,
+            normalized_remaining=sorted(set(audit.byte_survivors + audit.string_survivors))
+            or list(audit.blocking))
     return RedactionResult(output_bytes=output, verification=verification, plan=plan)
 
+
+# --------------------------------------------------------------------------
+# Whole-file redaction audit: text layer, bytes, decoded streams, structure
+# --------------------------------------------------------------------------
+
+def _phrase_byte_forms(phrase: str) -> set[bytes]:
+    """Every byte spelling of ``phrase`` a PDF can hold, lowercased.
+
+    Literal strings (WinAnsi, UTF-8, with and without PDF escapes), UTF-16
+    text strings, and the hex-string spelling of each. The haystack is
+    lowercased before the search, so the forms are too.
+    """
+    forms: set[bytes] = set()
+    for variant in {phrase, phrase.lower(), phrase.upper()}:
+        for codec in ("cp1252", "utf-8", "utf-16-be", "utf-16-le"):
+            raw = variant.encode(codec, "replace")
+            forms.add(raw.lower())
+            forms.add(raw.hex().encode())
+        forms.add(_pdf_literal(variant).lower())
+    return {form for form in forms if form}
+
+
+def _flate_streams(data: bytes) -> list[bytes]:
+    """Every Flate stream in the raw file, decoded, in every revision.
+
+    A regular-expression sweep, not a parse: it also reaches streams that
+    belong to earlier incremental-save revisions, which a parser that
+    follows the newest cross-reference table never visits.
+    """
+    import zlib
+    decoded = []
+    for body in re.findall(rb"stream\r?\n(.*?)endstream", data, re.S):
+        try:
+            decoded.append(zlib.decompress(body))
+        except zlib.error:
+            try:
+                decoded.append(zlib.decompressobj().decompress(body))
+            except zlib.error:
+                pass
+    return decoded
+
+
+def revision_count(data: bytes) -> int:
+    """How many saved revisions the file holds (1 for a freshly written file).
+
+    Each incremental save appends a new ``%%EOF``. A linearized file
+    carries two end markers for one revision, so that one case is allowed.
+    """
+    markers = data.count(b"%%EOF")
+    if markers and b"/Linearized" in data[:2048]:
+        markers -= 1
+    return max(markers, 1)
+
+
+def _object_inventory(pdf_bytes: bytes) -> dict:
+    """Walk every object of the newest revision with pypdf.
+
+    Returns the decoded data of every stream (any filter pypdf can
+    decode, not only Flate), every string value, and counts of the things
+    that hide content: images, annotations, attachments, form fields,
+    info entries and XMP. Raises ``ValueError`` for an encrypted file.
+    """
+    pypdf = _require_pypdf()
+    import io
+    from pypdf.generic import (ArrayObject, ByteStringObject, DictionaryObject, StreamObject,
+                               TextStringObject)
+    reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    if reader.is_encrypted:
+        raise ValueError("the PDF is encrypted, so its content cannot be checked")
+    found = {"streams": [], "strings": [], "images": 0, "annotations": 0, "attachments": 0,
+             "form_fields": 0, "info_entries": 0, "xmp": 0, "undecodable_streams": 0}
+
+    def visit(obj) -> None:
+        # Indirect references are not followed: every object is visited
+        # once by number in the loop below, so cycles cannot recurse.
+        if isinstance(obj, DictionaryObject):
+            kind, subtype = dict.get(obj, "/Type"), dict.get(obj, "/Subtype")
+            if subtype == "/Image":
+                found["images"] += 1
+            if kind == "/Annot" or ("/Rect" in obj and subtype is not None):
+                found["annotations"] += 1
+            if kind == "/Filespec" or "/EF" in obj:
+                found["attachments"] += 1
+            if "/FT" in obj:
+                found["form_fields"] += 1
+            if kind == "/Metadata":
+                found["xmp"] += 1
+            if isinstance(obj, StreamObject):
+                try:
+                    found["streams"].append(bytes(obj.get_data()))
+                except Exception:  # an unsupported or damaged filter
+                    found["undecodable_streams"] += 1
+            for value in dict.values(obj):
+                visit(value)
+        elif isinstance(obj, ArrayObject):
+            for value in list.__iter__(obj):
+                visit(value)
+        elif isinstance(obj, TextStringObject):
+            found["strings"].append(str(obj))
+        elif isinstance(obj, ByteStringObject):
+            found["strings"].append(bytes(obj).decode("latin-1"))
+
+    for number in range(1, int(reader.trailer.get("/Size", 1))):
+        try:
+            visit(reader.get_object(number))
+        except Exception:
+            found["undecodable_streams"] += 1
+    info = reader.trailer.get("/Info")
+    if info is not None:
+        found["info_entries"] = len(info.get_object())
+    return found
+
+
+@dataclass
+class PdfRedactionAudit:
+    """What a whole-file check of one PDF found. ``passed`` is fail-closed:
+    anything in ``blocking`` means the file is not safe to produce."""
+    text_layer: RedactionVerification
+    byte_survivors: list[str] = field(default_factory=list)
+    string_survivors: list[str] = field(default_factory=list)
+    revisions: int = 1
+    inventory: dict = field(default_factory=dict)
+    blocking: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return not self.blocking
+
+    def as_dict(self) -> dict:
+        layer = self.text_layer.as_dict()
+        return {"passed": self.passed, "text_layer_passed": layer["passed"],
+                "remaining": layer["remaining"],
+                "normalized_remaining": layer["normalized_remaining"],
+                "byte_survivors": self.byte_survivors, "string_survivors": self.string_survivors,
+                "revisions": self.revisions, "inventory": self.inventory,
+                "blocking": self.blocking, "notes": self.notes}
+
+
+def audit_redacted_pdf(pdf_bytes: bytes, phrases: list[str]) -> PdfRedactionAudit:
+    """Check a whole PDF file for any trace of ``phrases``. Fail closed.
+
+    Four independent searches run on the file bytes themselves:
+
+    1. the text layer re-extracted from the file (:func:`verify_redaction`);
+    2. the raw bytes and every Flate stream of every revision, for each
+       byte spelling a PDF can use (literal, UTF-16, hex string);
+    3. every stream of the newest revision as pypdf decodes it, which
+       covers XMP metadata, embedded attachments and non-Flate filters;
+    4. every string value in every object: info entries, annotation
+       contents, form field values, file names, bookmarks.
+
+    The file fails when any search finds a phrase, when it holds earlier
+    incremental-save revisions (their page content cannot be re-extracted,
+    so a phrase drawn in pieces there would go unseen), or when it is
+    encrypted or cannot be parsed. Images are counted and reported: text
+    that exists only as pixels is not searched, because no OCR is run.
+    """
+    if not is_pdf_bytes(pdf_bytes):
+        raise ValueError("not a PDF: the input carries no %PDF- header")
+    phrases = [p for p in phrases if p and p.strip()]
+    text_layer = verify_redaction(extract_text_layer(pdf_bytes), phrases)
+    audit = PdfRedactionAudit(text_layer=text_layer, revisions=revision_count(pdf_bytes))
+    if not text_layer.passed:
+        audit.blocking.append("a phrase is still in the text layer re-extracted from the file")
+    haystacks = [pdf_bytes.lower()] + [s.lower() for s in _flate_streams(pdf_bytes)]
+    strings: list[str] = []
+    try:
+        found = _object_inventory(pdf_bytes)
+    except ValueError as exc:
+        audit.blocking.append(str(exc))
+    except Exception as exc:  # a file the parser cannot walk is not a verified file
+        audit.blocking.append(
+            f"the PDF structure could not be read, so hidden content was not checked: {exc}")
+    else:
+        haystacks += [s.lower() for s in found.pop("streams")]
+        strings = found.pop("strings")
+        audit.inventory = found
+    forms = {p: _phrase_byte_forms(p) for p in phrases}
+    audit.byte_survivors = [p for p in phrases
+                            if any(form in hay for hay in haystacks for form in forms[p])]
+    normalized = [_normalize(s) for s in strings]
+    audit.string_survivors = [p for p in phrases if any(_normalize(p) in s for s in normalized)]
+    if audit.byte_survivors:
+        audit.blocking.append("a phrase is still in the file bytes or a decoded stream "
+                              "(page content, metadata, an attachment, or an earlier revision)")
+    if audit.string_survivors:
+        audit.blocking.append("a phrase is still in a string value (document information, "
+                              "an annotation, a form field, a bookmark or a file name)")
+    if audit.revisions > 1:
+        audit.blocking.append(
+            f"the file holds {audit.revisions - 1} earlier saved revision(s); earlier page content "
+            "stays recoverable until the file is rewritten in full, so redact it with "
+            "`legal redact`, which writes a new file")
+    inv = audit.inventory
+    if inv.get("images"):
+        audit.notes.append(f"{inv['images']} image(s) present: text that exists only as pixels "
+                           "was not searched, because no OCR was run")
+    for key, label in (("annotations", "annotation(s)"), ("attachments", "attachment(s)"),
+                       ("form_fields", "form field(s)"),
+                       ("info_entries", "document information entries"),
+                       ("xmp", "XMP metadata stream(s)")):
+        if inv.get(key):
+            audit.notes.append(f"{inv[key]} {label} present and searched; review whether "
+                               "they should be produced at all")
+    if inv.get("undecodable_streams"):
+        audit.notes.append(f"{inv['undecodable_streams']} object(s) or stream(s) could not be "
+                           "decoded and were searched in raw form only")
+    return audit
 
 # --------------------------------------------------------------------------
 # Optional real-PDF text extraction (pypdf, the `pdf` extra)

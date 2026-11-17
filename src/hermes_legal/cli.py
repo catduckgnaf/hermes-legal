@@ -492,8 +492,15 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
             except RuntimeError as exc:
                 print(f"no PDF was checked: {exc}", file=sys.stderr)
                 return 2
-            result = verify_redaction(doc, list(args.phrases))
-            print("checked the text layer re-extracted from the PDF file itself")
+            del doc  # the audit re-extracts; the call above only proves the file is readable
+            result = pdf_tools.audit_redacted_pdf(data, list(args.phrases))
+            print("checked the PDF file itself: the re-extracted text layer, the raw bytes, every "
+                  "decoded stream, every string value (metadata, annotations, form fields) and "
+                  "the number of saved revisions")
+            for reason in result.blocking:
+                print(f"FAILED: {reason}")
+            for note in result.notes:
+                print(f"note: {note}")
             print(json.dumps(result.as_dict(), indent=2))
             return 0 if result.passed else 1
         doc = DocumentText.from_texts([data.decode("utf-8")])

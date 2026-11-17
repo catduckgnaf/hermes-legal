@@ -44,12 +44,27 @@ def test_pdf_input_verifies_text_reextracted_from_the_pdf(tmp_path, capsys, monk
         pdf_tools, "extract_text_layer",
         lambda _data: DocumentText.from_texts(["Rebuilt page text."]),
     )
+    # The structure walk is stubbed too, so this runs without the pdf extra.
+    monkeypatch.setattr(pdf_tools, "_object_inventory", lambda _data: {"streams": [], "strings": []})
     pdf = tmp_path / "doc.pdf"
-    pdf.write_bytes(b"%PDF-1.7\nfake body")
+    pdf.write_bytes(pdf_tools.build_text_pdf(["Rebuilt page text."]))
     assert main(["redact-verify", str(pdf), "secret phrase"]) == 0
     out = capsys.readouterr().out
     assert "no PDF was checked" not in out
     assert "re-extracted" in out
+
+
+def test_pdf_whose_structure_cannot_be_read_never_passes(tmp_path, capsys, monkeypatch):
+    # The text layer looks clean, but the file cannot be walked for hidden
+    # content (metadata, attachments, annotations). That is not a pass.
+    monkeypatch.setattr(
+        pdf_tools, "extract_text_layer",
+        lambda _data: DocumentText.from_texts(["Rebuilt page text."]),
+    )
+    pdf = tmp_path / "doc.pdf"
+    pdf.write_bytes(b"%PDF-1.7\nfake body")
+    assert main(["redact-verify", str(pdf), "secret phrase"]) == 1
+    assert "hidden content was not checked" in capsys.readouterr().out
 
 
 def test_pdf_input_fails_when_phrase_survives_reextraction(tmp_path, capsys, monkeypatch):

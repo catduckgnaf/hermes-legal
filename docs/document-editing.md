@@ -56,6 +56,31 @@ regression test that needs no LibreOffice to run. Opening a redline in
 real Microsoft Word remains a manual release gate — Word is not
 available in the build environment, and this page does not claim it.
 
+### Manual release gate: open a redline in Word and LibreOffice
+
+Automated tests prove the XML and, where `soffice` is installed, a
+LibreOffice headless conversion. CI runners do not install LibreOffice,
+so that test skips there, and no runner has Microsoft Word. Before a
+release that changes `docx_edit.py` or `docx_fixtures.py`, a person runs
+this gate and records the result in the release pull request:
+
+1. Build a redline with `legal redline` from a real Word-authored
+   document (one saved by Word itself, with numbering, a footnote and a
+   table), not only from the generated corpus.
+2. Open the output in Microsoft Word. It must open with no repair
+   prompt. On the Review tab, every change appears as a tracked
+   insertion or deletion under the AI author name, and Accept All then
+   Reject All (on a second copy) each give the expected text.
+3. Open the same output in LibreOffice Writer. Edit > Track Changes >
+   Manage lists the same changes, and accept and reject both work.
+4. Check that numbering, the footnote and the table are intact in both
+   programs.
+5. Run `uv run python -m pytest -q -rs tests/test_libreoffice_fidelity.py`
+   on a machine with LibreOffice and confirm it ran rather than skipped.
+
+Record: the Word and LibreOffice versions, the operating system, and
+pass or fail for each step. A failure blocks the release.
+
 ## PDF: Bates stamping and true redaction (PdfCraft, `hermes_legal.pdfcraft`)
 
 Redaction and Bates stamping run on [PdfCraft](https://github.com/storytold/pdfcraft),
@@ -107,7 +132,27 @@ the independent checker below.
   same way. It keeps only the text: layout, fonts, images and graphics are
   lost, which is why it is not the default.
 - `legal redact-verify <file> <phrase>...` re-checks any PDF (or a plain
-  text file, saying plainly that no PDF was checked).
+  text file, saying plainly that no PDF was checked). For a PDF it runs
+  the whole-file audit (`pdf_tools.audit_redacted_pdf`), which fails
+  closed. The file passes only when all of these hold:
+  - no phrase in the text layer re-extracted from the file;
+  - no phrase in the raw bytes or in any Flate stream of any revision,
+    in any spelling a PDF can use (literal, UTF-16, hex string);
+  - no phrase in any stream of the newest revision as pypdf decodes it
+    (XMP metadata, embedded attachments, other filters);
+  - no phrase in any string value (document information, annotation
+    contents, form field values, bookmarks, file names);
+  - the file holds one saved revision. A file with incremental-save
+    history fails even when no phrase is found, because earlier page
+    content stays recoverable and a phrase drawn in pieces there cannot
+    be searched for; `legal redact` writes a new file with no history;
+  - the file is not encrypted and its structure can be read.
+
+  Images, annotations, attachments, form fields and metadata that are
+  present are counted and printed as notes. Text that exists only as
+  pixels in an image is not searched, because no OCR is run, and the
+  output says so. The `redact --engine rebuild` output is held to the
+  same audit before anything is written.
 
 ## Still remaining
 
