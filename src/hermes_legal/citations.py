@@ -675,6 +675,16 @@ class CourtListenerClient:
 
     def verify(self, citation: Citation | str, quote: str | None = None) -> VerificationResult:
         key = _display(citation)
+        cite = _as_citation(citation)
+        if cite is not None and cite.kind != "case":
+            # CourtListener citation lookup covers case reporters only. A
+            # statute or an unrecognized shape is never sent: a 404 for an
+            # authority this resolver cannot cover would read as
+            # ``not_found``, which no recorded attestation may override.
+            return VerificationResult(
+                citation=key, status="unverified", source=self.name,
+                detail="CourtListener citation lookup covers case citations only; "
+                       "this citation was not sent and has not been checked.")
         try:
             payload = self.lookup(citation)
         except urllib.error.HTTPError as exc:
@@ -1312,6 +1322,18 @@ class CeilingGuardedResolver:
         return self.inner.verify(citation, quote=quote)
 
 
+def default_lookup_resolver() -> "ResolverRouter":
+    """The router an online lookup runs when the caller injects no
+    resolver: case citations to CourtListener (with the Caselaw Access
+    Project as a fallback when its token is configured) and U.S.C.
+    statutes to govinfo. A statute is never handed to a case resolver."""
+    cap = CaselawAccessClient()
+    return ResolverRouter(
+        case_resolver=CourtListenerClient(),
+        statute_resolver=GovInfoClient(),
+        fallback_case_resolver=cap if cap.has_token else None)
+
+
 def guard_resolver(resolver: CitationResolver | None,
                    ceiling: str | None) -> CitationResolver | None:
     """Wrap *resolver* in the ceiling guard; ``None`` stays ``None``."""
@@ -1660,7 +1682,7 @@ __all__ = [
     "LOOKUP_ALLOWED_CEILINGS", "OfflineResolver",
     "REPORTERS", "ResolverRouter", "STATUSES", "VerificationResult", "VerifyAllResult",
     "assert_verify_all", "attestation_class", "build_lookup_preview",
-    "case_names_match", "extract",
+    "case_names_match", "default_lookup_resolver", "extract",
     "extract_all", "extract_citations",
     "format_all", "format_bluebook", "format_citation", "govinfo_package_id",
     "govinfo_section_root", "guard_resolver", "load_attestations",

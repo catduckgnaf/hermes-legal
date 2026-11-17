@@ -296,6 +296,8 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
                    help="matter privacy ceiling to enforce: on LOCAL_ONLY no citation lookup leaves the device")
     c.add_argument("--matter-id", type=int, default=None,
                    help="read the privacy ceiling and recorded attestations for this matter from the database")
+    c.add_argument("--preview", action="store_true",
+                   help="pre-send preview only: list the citation strings a lookup would send and to which resolver, and run no lookup")
     ca = sub.add_parser("cite-attest", help="record a human attestation for a statute, Westlaw, Lexis, or public-domain citation (who checked it, from what source)")
     ca.add_argument("citation", help="the citation as written, e.g. '42 U.S.C. § 1983' or '2019 WL 4639462'")
     ca.add_argument("--by", required=True, help="who checked the citation")
@@ -520,6 +522,31 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
                 attestations = load_attestations(conn, matter_id)
             finally:
                 conn.close()
+        if getattr(args, "preview", False):
+            # Pre-send: describe the lookup and send nothing. An
+            # unrecognized shape is never sent to a resolver, so it is
+            # listed apart. With no ceiling given a real run would be
+            # unguarded, and the preview says so.
+            sendable = [c for c in found if c.kind != "unrecognized"]
+            lookup_preview = build_lookup_preview(
+                sendable, ceiling=ceiling if ceiling is not None else "STANDARD",
+                resolver_name=getattr(resolver, "name", "") if resolver is not None else "")
+            would_send = [] if (lookup_preview.blocked or resolver is None) else list(lookup_preview.citations)
+            print(json.dumps({
+                "preview_only": True,
+                "lookup_ran": False,
+                "resolver": getattr(resolver, "name", None) if resolver is not None else None,
+                "privacy_ceiling": ceiling,
+                "ceiling_enforced": ceiling is not None,
+                "would_send": would_send,
+                "never_sent": [c.normalized for c in found if c.kind == "unrecognized"],
+                "blocked": lookup_preview.blocked,
+                "blocked_reason": lookup_preview.blocked_reason,
+                "note": ("No lookup was run and nothing left the device. Every citation is still unverified; "
+                         "run cite-check without --preview to check them."
+                         + ("" if resolver is not None else " No resolver is configured, so a real run would also send nothing.")),
+            }, indent=2))
+            return 0
         gate = verify_all_gate(args.text, resolver=resolver, attestations=attestations)
         lookup_preview = build_lookup_preview(
             found, ceiling=ceiling,
