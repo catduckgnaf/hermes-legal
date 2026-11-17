@@ -321,7 +321,7 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
     rd.add_argument("input"); rd.add_argument("phrases", nargs="+"); rd.add_argument("-o", "--output", required=True)
     rd.add_argument("--engine", choices=["pdfcraft", "rebuild"], default="pdfcraft",
                     help="pdfcraft (default) keeps the layout; rebuild writes a new text-only PDF and loses layout, fonts and images")
-    rv = sub.add_parser("redact-verify", help="verify phrases are absent from a PDF's re-extracted text layer, or from a plain text file (a text file check is not a PDF check)")
+    rv = sub.add_parser("redact-verify", help="verify phrases are absent from a whole PDF file (text layer, bytes, decoded streams, metadata, annotations, attachments, saved revisions), or from a plain text file (a text file check is not a PDF check)")
     rv.add_argument("text_file", help="a PDF file, or a plain extracted-text file"); rv.add_argument("phrases", nargs="+")
     t = sub.add_parser("tools"); t.add_argument("--json", action="store_true")
     tool = sub.add_parser("tool", help="call one legal_* tool, exactly as an agent would")

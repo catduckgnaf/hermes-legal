@@ -64,7 +64,7 @@ so that test skips there, and no runner has Microsoft Word. Before a
 release that changes `docx_edit.py` or `docx_fixtures.py`, a person runs
 this gate and records the result in the release pull request:
 
-1. Build a redline with `legal redline` from a real Word-authored
+1. Build a redline with `legal doc-redline` from a real Word-authored
    document (one saved by Word itself, with numbering, a footnote and a
    table), not only from the generated corpus.
 2. Open the output in Microsoft Word. It must open with no repair
