@@ -218,8 +218,12 @@ def recap_fake(hits):
 
 def pacer_pair(hits):
     t = recap_fake(hits)
+    t.add("POST", "https://pacer.uscourts.gov/services/cso-auth",
+          lambda req: (200, {"nextGenCSO": "synthetic-pacer-token"}))
     recap = CourtListenerConnector(t, MemoryCredentialStore())
-    pacer = PacerConnector(t, MemoryCredentialStore(), recap=recap)
+    pacer = PacerConnector(t, MemoryCredentialStore({"pacer:username": "synthetic-user",
+                                                     "pacer:password": "synthetic-password"}),
+                           recap=recap)
     return t, pacer
 
 
