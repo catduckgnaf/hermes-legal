@@ -168,16 +168,16 @@ def endpoint_host(endpoint) -> str:
 def is_local_endpoint(endpoint, *, resolver=None) -> bool:
     """True only when an endpoint's host is verified loopback.
 
-    ``localhost`` names and literal loopback addresses (127.0.0.0/8 and
-    ::1) need no lookup. Any other name is resolved, and every resolved
+    Literal loopback addresses (127.0.0.0/8 and ::1) need no lookup.
+    Every name is resolved, ``localhost`` included, because a hosts file
+    or resolver can point that name at another machine. Every resolved
     address must be loopback: a name that resolves to a mix, resolves
-    only off the device, or does not resolve at all is not local.
+    only off the device, or does not resolve at all is not local. The
+    unspecified addresses ``0.0.0.0`` and ``::`` are not loopback.
     """
     host = endpoint_host(endpoint)
     if not host:
         return False
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
@@ -191,7 +191,7 @@ def is_local_endpoint(endpoint, *, resolver=None) -> bool:
         return False
     for address in addresses:
         try:
-            if not ipaddress.ip_address(str(address)).is_loopback:
+            if not ipaddress.ip_address(str(address).split("%")[0]).is_loopback:
                 return False
         except ValueError:
             return False
@@ -826,6 +826,26 @@ def build_sent_payload_record(preview, payload, chunks=None, *, model=None, file
     }
 
 
+def _verified_send_endpoint(preview, *, endpoint=None, environ=None, resolver=None):
+    """The endpoint a send goes to, verified loopback for LOCAL_ONLY.
+
+    Returns the endpoint string to record in the AI log. For a
+    LOCAL_ONLY provider an endpoint that is missing or not loopback
+    raises, so a log row never names an endpoint that was not checked.
+    Cloud providers have no endpoint on record here and return "".
+    """
+    provider = preview.provider
+    if provider.tier != "LOCAL_ONLY":
+        return str(endpoint or "").strip()
+    reason = _locality_reason(
+        provider, model=preview.model, endpoint=endpoint, environ=environ,
+        resolver=resolver,
+    )
+    if reason:
+        raise PrivacyViolationError(reason)
+    return provider_endpoint(provider, endpoint=endpoint, environ=environ)
+
+
 def log_sent_payload(conn, matter_id, preview, payload, *, action="ask", chunks=None,
                      model=None, files=None, endpoint=None, environ=None, resolver=None):
     """Write the AI log row for a payload actually sent; return its record.
@@ -843,12 +863,16 @@ def log_sent_payload(conn, matter_id, preview, payload, *, action="ask", chunks=
     base = str(action or "").strip()
     if not base:
         raise ValueError("action must not be empty")
+    record["endpoint"] = _verified_send_endpoint(
+        preview, endpoint=endpoint, environ=environ, resolver=resolver
+    )
     detail = (
         f"{base} sent_sha256={record['sent_sha256']}"
         f" preview_sha256={record['preview_sha256']}"
         f" sent_bytes={record['sent_bytes']}"
         f" chunks={record['chunk_count']}"
         f" chunk_sha256={','.join(record['chunk_sha256']) or '-'}"
+        f" endpoint={record['endpoint'] or '-'}"
     )
     row_id = log_ai_use(
         conn, matter_id, preview.provider, detail, model=preview.model,
