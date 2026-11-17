@@ -30,9 +30,8 @@
     "active": true,
     "targets": ["nsis", "msi", "appimage", "deb"],
     "category": "Productivity",
-    "shortDescription": "Local-first legal work desktop: matter workspaces and document editing with nothing shared by default.",
-    "longDescription": "hermes-legal is a local-first desktop for legal work. Matters, documents and the database live in a local SQLite file and ordinary folders on your own computer. The Python core runs as a sidecar process managed by this Tauri 2 shell; the Hermes plugin and the local dashboard remain fully usable without the shell.",
-    "externalBin": ["binaries/hermes-legal-sidecar"],
+    "shortDescription": "Lightweight desktop client for the Hermes agent: connect, pick a session, chat with streamed replies.",
+    "longDescription": "hermes-legal desktop is a thin client for a running Hermes agent. It connects to the Hermes API server with a host, port and token, shows connection health, lists sessions, streams chat replies and shows approval prompts when the server exposes them. It does not embed or start the agent and starts no other process.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

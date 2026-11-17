@@ -76,22 +76,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Stage the Python sidecar placeholder for this target
-        shell: bash
-        run: |
-          # The real sidecar is the Python core packaged as one
-          # executable. Until that packaging lands, stage a placeholder
-          # file with the exact target-triple name Tauri expects next to
-          # bundle.externalBin, so the shell itself builds and can be
-          # smoke tested. A placeholder sidecar cannot serve the
-          # dashboard; artifacts from this step are never a release.
-          triple="$(rustc -vV | sed -n 's/^host: //p')"
-          ext=""
-          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
-          mkdir -p desktop/src-tauri/binaries
-          printf 'placeholder sidecar for %s\n' "$triple" > "desktop/src-tauri/binaries/hermes-legal-sidecar-${triple}${ext}"
-          ls -la desktop/src-tauri/binaries/
-
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 
@@ -137,26 +121,6 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - uses: dtolnay/rust-toolchain@stable
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Stage the Python sidecar placeholder for this target
-        shell: bash
-        run: |
-          # The real sidecar is the Python core packaged as one
-          # executable. Until that packaging lands, stage a placeholder
-          # file with the exact target-triple name Tauri expects next to
-          # bundle.externalBin, so the shell itself builds and can be
-          # smoke tested. A placeholder sidecar cannot serve the
-          # dashboard; artifacts from this step are never a release.
-          triple="$(rustc -vV | sed -n 's/^host: //p')"
-          ext=""
-          if [ "$RUNNER_OS" = "Windows" ]; then ext=".exe"; fi
-          mkdir -p desktop/src-tauri/binaries
-          printf 'placeholder sidecar for %s\n' "$triple" > "desktop/src-tauri/binaries/hermes-legal-sidecar-${triple}${ext}"
-          ls -la desktop/src-tauri/binaries/
 
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked

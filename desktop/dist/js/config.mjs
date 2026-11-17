@@ -80,3 +80,30 @@ export function saveConfig(storage, config, key = CONFIG_STORAGE_KEY) {
   storage?.setItem?.(key, JSON.stringify(clean));
   return clean;
 }
+
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+export function isLoopbackHost(host) {
+  const h = String(host ?? "").trim().toLowerCase();
+  return LOOPBACK_HOSTS.has(h) || /^127(\.\d{1,3}){3}$/.test(h);
+}
+
+// Non-fatal problems with a valid config, as sentences the UI can show.
+// These warn and never block: plain http to a non-loopback name is
+// reasonable inside a private tunnel, but the user should know the
+// token is not encrypted on that path.
+export function configWarnings(input) {
+  const config = normalizeConfig(input);
+  const warnings = [];
+  if (!config.token) {
+    warnings.push(
+      "No token set. The Hermes API server requires a bearer token on every route except /health, so sessions and chat will be refused.",
+    );
+  }
+  if (config.scheme === "http" && !isLoopbackHost(config.host)) {
+    warnings.push(
+      `Plain http to ${config.host} sends the token and the conversation unencrypted. Use https or a private tunnel.`,
+    );
+  }
+  return warnings;
+}
