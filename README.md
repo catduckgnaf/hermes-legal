@@ -55,7 +55,10 @@ stop control). **Windows and Linux.** Pull requests build unsigned
 Windows installers (NSIS and MSI, including a silent install check) and
 Linux installers (deb and AppImage) and test the client against a mock
 server. It has not been verified against a live Hermes server and there
-is no signed release yet. Until there is, the CLI, the MCP server and
+is no signed release yet. An unsigned preview of the Windows installer
+and the Linux packages is attached to
+[desktop-v0.1.0](https://github.com/catduckgnaf/hermes-legal/releases/tag/desktop-v0.1.0).
+Until there is a signed release, the CLI, the MCP server and
 `legal serve` are the supported ways to use the legal tools themselves.
 The v1 core below targets Linux and Windows; macOS is not part of v1.
 
@@ -80,7 +83,7 @@ only a stub or packaging files exist.
 | MCP server (`legal mcp serve`) | Working | A standard-library MCP server over stdio: initialize, ping, tool list and tool calls. Read tools are listed by default. Write tools are listed only after a person runs `legal mcp allow-writes on`, and even then a call only saves a pending action for approval. |
 | Connectors (Clio, DocuSign, CourtListener / RECAP, PACER) | Working, in part | A shared connector contract (doctor check, data-flow label, per-matter enable flag, credentials only through a credential store, read-only by default, writes as pending actions) plus these four connectors exist, with offline tests against fake transports. PACER pulls require a RECAP check of that document first and a named human approval. Document download is refused: the Case Locator API does not document a verified document-byte URL, so the client does not call an invented one. The wider P0/P1/P2 list under Connections is the roadmap, not the shipped set. |
 | `legal serve` (local dashboard) | Working | A standard-library web dashboard on 127.0.0.1 with a new random token every launch: matters, documents, deadlines, citation status, the pending-actions queue and a local-model Ask box, all through `dispatch.py`. Approving or rejecting needs a typed confirmation and a server started from an interactive terminal, the same rule as the CLI. A non-loopback bind needs `--allow-non-loopback` and prints a warning. |
-| Desktop app | Working, in part | Thin client for a running Hermes agent. Tested against a mock Hermes server. Unsigned Windows (NSIS, MSI) and Linux (deb, AppImage) installers build in CI; the Windows job also silent-installs, launches and uninstalls. The API token is stored in Windows Credential Manager, or in a mode-0600 file on Linux, not in the page's saved settings once the shell is running. Not yet verified against a live Hermes server, and CI artifacts are not a signed release. |
+| Desktop app | Working, in part | Thin client for a running Hermes agent. Tested against a mock Hermes server. Unsigned Windows (NSIS, MSI) and Linux (deb, AppImage) installers build in CI; the Windows job also silent-installs, launches and uninstalls. The API token is stored in Windows Credential Manager, or in a mode-0600 file on Linux, not in the page's saved settings once the shell is running. Not yet verified against a live Hermes server. CI artifacts are not a signed release. The unsigned installers are attached to the GitHub release desktop-v0.1.0. |
 
 ## Quickstart
 

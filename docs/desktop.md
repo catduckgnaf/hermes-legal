@@ -51,7 +51,10 @@ endpoint in `tauri.conf.json`. Both come back only with a feature that
 needs them and, for the updater, a real public key.
 
 Signing secrets are documented in `desktop/packaging.md`. CI builds are
-unsigned smoke builds. They are not a release.
+unsigned smoke builds. They are not a signed release. The unsigned
+Windows installer and Linux packages for 0.1.0 are attached to the
+GitHub release
+[desktop-v0.1.0](https://github.com/catduckgnaf/hermes-legal/releases/tag/desktop-v0.1.0).
 
 ## Not this app
 

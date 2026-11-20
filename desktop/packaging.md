@@ -70,8 +70,11 @@ secret, but a made-up one would break update verification for every
 user, so the field stays empty until then.
 
 A build whose signing secrets are absent is unsigned. Unsigned
-artifacts are for smoke testing only and are never published, never
-submitted to winget or Flathub, and never attached to a release.
+artifacts are never published as a signed release and are never
+submitted to winget or Flathub. An unsigned preview may be attached to
+a GitHub release that says so in the title. The 0.1.0 preview is
+[desktop-v0.1.0](https://github.com/catduckgnaf/hermes-legal/releases/tag/desktop-v0.1.0).
+That preview is not a signed release.
 
 ## Updates
 
