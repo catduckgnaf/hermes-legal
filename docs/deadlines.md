@@ -97,14 +97,22 @@ over a general rule file.
 
 ## What is and is not wired to a surface
 
-Two agent tools exist: `legal_deadline_extract` (candidates only) and
-`legal_deadline_calc` (a calculation with its steps). Neither writes
-anything, and there is deliberately no agent tool that confirms a
-deadline. Confirmation (`confirm_candidate`, `confirm_calculation`) and
-export (`export_ics`, `export_calendar_events`) are library functions
-today: there is no `legal` command line subcommand or desktop screen
-for confirming a deadline or writing the .ics file yet, and live sync
-to a connected calendar is not built.
+Three agent tools exist: `legal_deadline_extract` (candidates only),
+`legal_deadline_calc` (a calculation with its steps) and
+`legal_deadline_list` (the stored rows). None of them writes anything,
+and there is deliberately no agent tool that confirms a deadline.
+
+A person confirms and exports from the command line:
+
+```text
+legal deadlines list <matter-id>
+legal deadlines confirm <matter-id> --rule-id <id> --trigger-date YYYY-MM-DD --title "..." --by "Name" [--second-by "Name"]
+legal deadlines export-ics <matter-id> -o deadlines.ics
+```
+
+Every exported event still carries the verify-against-local-rules
+warning, and the command prints it as well. Live sync to a connected
+calendar is not built.
 
 ## Acceptance tests
 

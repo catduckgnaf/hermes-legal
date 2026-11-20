@@ -99,11 +99,28 @@ export class HermesClient {
     return this.#json("/v1/capabilities");
   }
 
-  async listSessions({ limit = 50, offset = 0 } = {}) {
+  // An authenticated probe. /health is public, so a green health dot
+  // does not mean the token was accepted. 401 is a rejected token.
+  async probeAuth() {
+    return this.capabilities();
+  }
+
+  async listSessionsPage({ limit = 50, offset = 0 } = {}) {
     const query = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     const body = await this.#json(`/api/sessions?${query}`);
     const data = Array.isArray(body) ? body : body?.data ?? [];
-    return data.map(normalizeSession);
+    const hasMore = typeof body?.has_more === "boolean" ? body.has_more : data.length === limit;
+    return {
+      sessions: data.map(normalizeSession),
+      hasMore,
+      limit,
+      offset,
+    };
+  }
+
+  async listSessions({ limit = 50, offset = 0 } = {}) {
+    const page = await this.listSessionsPage({ limit, offset });
+    return page.sessions;
   }
 
   async createSession({ title } = {}) {
@@ -142,6 +159,16 @@ export class HermesClient {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+    });
+  }
+
+  // POST /v1/runs/{run_id}/stop. Recorded on a current Hermes API server
+  // (issue #91). Still not pinned to an upstream commit (issue #77).
+  async stopRun(runId) {
+    return this.#json(`/v1/runs/${encodeURIComponent(runId)}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
     });
   }
 
@@ -230,7 +257,10 @@ export class HermesClient {
     // assistant.completed carries the authoritative final text; deltas
     // are the incremental rendering of the same text.
     if (completedContent !== null) content = completedContent;
-    return { content, runId, status: status ?? (content ? "completed" : "failed") };
+    // A stream that closes without run.completed, run.failed or
+    // run.cancelled did not finish. Do not guess "completed" from text
+    // that happened to arrive.
+    return { content, runId, status: status ?? "interrupted" };
   }
 }
 

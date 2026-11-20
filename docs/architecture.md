@@ -5,7 +5,7 @@ matter files, and three ways in: the desktop/dashboard, the `legal` CLI, and the
 MCP agent adapter. This mirrors hermes-finance deliberately. There is no Hermes
 plugin; the desktop client is standalone.
 
-- **Tools are defined once** in `tooldefs.py` (18 `legal_*` tools). The CLI read
+- **Tools are defined once** in `tooldefs.py` (19 `legal_*` tools). The CLI read
   commands, the dashboard and the MCP server all call the same
   implementations, so they agree by construction.
 - **A matter is a folder.** Files stay as files in the user's own folders; the

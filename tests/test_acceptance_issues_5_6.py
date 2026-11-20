@@ -193,8 +193,10 @@ def test_issue6_no_agent_tool_can_create_or_confirm_a_deadline():
     approval-gated (write=True), which this test then forces a decision on."""
     from hermes_legal import tooldefs
     deadline_tools = {name: tool for name, tool in runtime.TOOLS_BY_NAME.items() if "deadline" in name}
-    assert set(deadline_tools) == {"legal_deadline_extract", "legal_deadline_calc"}
+    assert set(deadline_tools) == {
+        "legal_deadline_extract", "legal_deadline_calc", "legal_deadline_list"}
     assert not any(tool.write for tool in deadline_tools.values())
+    assert not any("confirm" in name for name in deadline_tools)
     assert tooldefs  # imported to keep the catalog the single source
 
 

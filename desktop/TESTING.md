@@ -156,13 +156,13 @@ record what you see in C4.
 
 ### C8. Persistence
 
-- [ ] C8.1 Close the app and reopen it: scheme, host, port and token
-      are filled in as saved. (The token is stored unencrypted in the
-      WebView profile for now; moving it to Windows Credential Manager
-      is milestone M2.)
-- [ ] C8.2 The saved settings live under
+- [ ] C8.1 Close the app and reopen it: scheme, host and port are filled in
+      as saved. The API token is not kept in the page settings once the
+      shell is running; it is stored in Windows Credential Manager.
+- [ ] C8.2 The WebView profile lives under
       `%LOCALAPPDATA%\com.catduckgnaf.hermes-legal\`. Confirm the folder
-      name matches the identifier.
+      name matches the identifier. The installed program is
+      `hermes-legal.exe`.
 
 ### C9. Exit and uninstall
 

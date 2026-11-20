@@ -25,6 +25,7 @@ import { createServer } from "node:http";
 
 export const MOCK_TOKEN = "test-api-server-key";
 export const APPROVAL_TRIGGER = "needs-approval";
+export const CUT_TRIGGER = "cut-stream";
 
 let seq = 0;
 
@@ -182,6 +183,19 @@ export function createMockHermes({ token = MOCK_TOKEN, features = {} } = {}) {
       const write = (chunk) => res.write(chunk);
       write(": keepalive\n\n");
       write(sseFrame("run.started", { run_id: runId, session_id: id }));
+      if (String(text).includes(CUT_TRIGGER)) {
+        write(sseFrame("assistant.delta", {
+          run_id: runId,
+          session_id: id,
+          message_id: messageId,
+          delta: "Partial",
+        }));
+        (state.messages[id] ??= []).push(
+          { id: Date.now(), session_id: id, role: "user", content: String(text), timestamp: 1731500300 },
+          { id: Date.now() + 1, session_id: id, role: "assistant", content: "Partial", timestamp: 1731500301 },
+        );
+        return res.end();
+      }
       write(sseFrame("message.started", { run_id: runId, session_id: id, message: { id: messageId, role: "assistant" } }));
 
       let suffix = "";
@@ -234,6 +248,12 @@ export function createMockHermes({ token = MOCK_TOKEN, features = {} } = {}) {
         { id: Date.now() + 1, session_id: id, role: "assistant", content: reply, timestamp: 1731500301 },
       );
       return res.end();
+    }
+
+    const stopMatch = path.match(/^\/v1\/runs\/([^/]+)\/stop$/);
+    if (req.method === "POST" && stopMatch) {
+      state.stopped = decodeURIComponent(stopMatch[1]);
+      return sendJson(res, 200, { object: "hermes.run.stop", run_id: state.stopped, stopped: true });
     }
 
     const approvalMatch = path.match(/^\/v1\/runs\/([^/]+)\/approval$/);

@@ -24,7 +24,8 @@ export function backoffDelay(
 
 // Polls client.health(). Calls onChange({ state, attempt, retryInMs,
 // health, error }) when the state changes and on every failed attempt:
-//   state "ok"       the last probe succeeded
+//   state "ok"        the last probe succeeded and the token was accepted
+//   state "rejected" the server is up but the token was refused (HTTP 401)
 //   state "offline"  the last probe failed; retryInMs is the wait
 export class HealthMonitor {
   constructor(client, {
@@ -66,13 +67,36 @@ export class HealthMonitor {
   async check() {
     let health = null;
     let error = null;
+    let authRejected = null;
     try {
       health = await this.client.health();
     } catch (err) {
       error = err;
     }
+    if (error === null && typeof this.client.probeAuth === "function") {
+      try {
+        await this.client.probeAuth();
+      } catch (err) {
+        if (err?.status === 401 || err?.code === "invalid_api_key") authRejected = err;
+        else error = err;
+      }
+    }
     if (!this.running) return this.state;
-    if (error === null) {
+    if (authRejected) {
+      const changed = this.state !== "rejected";
+      this.failures = 0;
+      this.state = "rejected";
+      if (changed) {
+        this.onChange({
+          state: "rejected",
+          attempt: 0,
+          retryInMs: this.intervalMs,
+          health,
+          error: authRejected,
+        });
+      }
+      this.#schedule(this.intervalMs);
+    } else if (error === null) {
       const changed = this.state !== "ok";
       this.failures = 0;
       this.state = "ok";

@@ -509,23 +509,42 @@ Acceptance criteria:
     This PR adds a short correction notice to each; the full rewrite is
     separate.
 
-## 12. Open questions for the owner
+## 12. Decisions (2026-11-20)
 
-1. CORS: does your Hermes API server answer cross-origin requests from
-   a webview? If you can run the unsigned build against it once
-   (`desktop/TESTING.md`, Windows steps 4 to 6), that answers it.
-2. The Python sidecar is removed from the Tauri app in this PR, on the
-   reading that issue #34 makes the desktop app a thin Hermes client
-   only. `docs/desktop.md` still describes a "Tauri 2 plus Python
-   sidecar" standalone product. Is that product dropped, or does it
-   need its own separate app later?
-3. Plain `http` to a non-loopback host: warn (current) or block unless
-   an explicit "allow insecure" box is ticked?
-4. DOCX and PDF file associations: remove from the thin client?
-5. Identifier: keep `com.catduckgnaf.hermes-legal` everywhere, or move
-   everything to the hyphen-free `com.catduckgnaf.hermeslegal` before
-   anything ships?
-6. Should the app be named for Hermes generally or stay `hermes-legal`?
-   The window title is currently "hermes-legal - Hermes desktop client".
-7. Is a same-machine TUI gateway mode (richer approvals, clarify, sudo
-   prompts) wanted after v1, or is the API server enough?
+These close the owner questions in issue #89, except CORS, which still
+needs a live server (issue #78).
+
+1. The Tauri app is a thin client only. The "Tauri 2 plus Python
+   sidecar" product is dropped for v1. It is not a second app in this
+   repository. Document editing stays in the Python CLI.
+2. Plain `http` to a non-loopback host warns and does not block. A
+   private tunnel is a real setup. The warning stays next to the status
+   line (`configWarnings`).
+3. DOCX and PDF file associations are removed. The thin client does not
+   open local documents. They can return with a viewer that has a
+   reason to own those types.
+4. The updater block is removed until a signed release has a real
+   public key. An empty key is not a placeholder we ship.
+5. The identifier stays `com.catduckgnaf.hermes-legal`. Flatpak and
+   D-Bus allow a hyphen in the last element only. It is discouraged,
+   and it is valid. Renaming after installers exist would be worse.
+6. The app name stays `hermes-legal`. It is the legal client, not a
+   general Hermes shell.
+7. v1 talks to the Hermes API server only. A same-machine TUI gateway
+   mode (richer approvals, clarify, sudo prompts) is after v1.
+8. On Linux the token commands use a mode-0600 file under the user
+   config directory, not Secret Service. Secret Service needs a session
+   bus that CI and some desktops do not have. Windows uses Credential
+   Manager, as planned.
+9. The content security policy keeps `script-src 'self'` and drops
+   `unsafe-inline`, `ws:` and `wss:`. `connect-src` still allows `http:`
+   and `https:` because the agent host is chosen at run time, and it
+   also allows `ipc:` and `http://ipc.localhost` so the two token
+   commands can cross the Tauri bridge.
+
+## 13. Still open
+
+CORS: does the Hermes API server answer cross-origin requests from a
+webview origin? Issue #78. A live check is still required before
+calling the desktop client verified against a real agent.
+

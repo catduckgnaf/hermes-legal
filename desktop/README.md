@@ -4,7 +4,7 @@ A lightweight desktop client that connects to Hermes — the agent
 backend — the way the Android client apps do. It is built from the
 ground up as a client: it does not embed the agent and it is not a
 Hermes plugin (the plugin direction was decided against on
-2026-11-14). Windows first; Linux later.
+2026-11-14). Windows and Linux are both v1 platforms.
 
 See [PROTOCOL.md](PROTOCOL.md) for the researched Hermes protocol this
 client is built against, and [../docs/desktop.md](../docs/desktop.md)
@@ -45,18 +45,18 @@ for the earlier Tauri decision record this client keeps.
   `src/main.rs`, `src/lib.rs`, capabilities, icons). The shell stays
   minimal; all client behavior is in the frontend modules. The
   shell bundles no sidecar and grants the WebView no shell permission.
-- `flatpak/` — Flatpak manifest (structure only in this pass; Linux
-  packaging is later).
+- `flatpak/` — Flatpak manifest. The manifest is not built in CI; deb and AppImage are.
 - `winget/` — winget manifest set for the signed Windows installers.
 - `packaging.md` — build, signing secrets, update, and release
   checklist.
 
 ## Windows packaging and CI
 
-`tauri.conf.json` keeps the NSIS and MSI bundle targets (plus the
-existing Linux targets, untouched in this pass). The desktop workflow
-runs the mock-server tests and an unsigned Windows build
-(`cargo tauri build --bundles nsis,msi`) on pull requests that touch
+`tauri.conf.json` keeps the NSIS and MSI bundle targets and the Linux
+deb and AppImage targets. The desktop workflow runs the mock-server
+tests, an unsigned Windows build (`cargo tauri build --bundles nsis,msi`,
+then a silent install, launch and uninstall) and an unsigned Linux build
+(`cargo tauri build --bundles deb,appimage`) on pull requests that touch
 `desktop/**`, and keeps the manually triggered full build. CI builds
 are unsigned smoke builds; signing stays a release step, see
 `packaging.md`.

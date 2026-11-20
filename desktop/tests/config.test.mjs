@@ -5,8 +5,10 @@ import {
   DEFAULT_CONFIG,
   baseUrl,
   loadConfig,
+  loadConnection,
   normalizeConfig,
   saveConfig,
+  saveConnection,
 } from "../dist/js/config.mjs";
 
 function memoryStorage() {
@@ -90,4 +92,31 @@ test("config warnings flag a missing token and clear-text remote http", async ()
   assert.equal(remote.length, 1);
   assert.match(remote[0], /unencrypted/);
   assert.throws(() => configWarnings({ host: "", token: "k" }), TypeError);
+});
+
+test("a token store migrates the token out of localStorage", async () => {
+  const storage = memoryStorage();
+  saveConfig(storage, { host: "127.0.0.1", port: 8642, token: "legacy-token" });
+  const memory = { value: "" };
+  const tokenStore = {
+    async getToken() {
+      return memory.value;
+    },
+    async setToken(token) {
+      memory.value = token;
+    },
+  };
+  const loaded = await loadConnection(storage, tokenStore);
+  assert.equal(loaded.token, "legacy-token");
+  assert.equal(loadConfig(storage).token, "");
+  assert.equal(memory.value, "legacy-token");
+  const saved = await saveConnection(storage, tokenStore, {
+    host: "10.0.0.8",
+    port: 8642,
+    token: "next-token",
+  });
+  assert.equal(saved.token, "next-token");
+  assert.equal(loadConfig(storage).token, "");
+  assert.equal(loadConfig(storage).host, "10.0.0.8");
+  assert.equal(memory.value, "next-token");
 });

@@ -1,4 +1,5 @@
 """Public claims in the README and docs must match the code (issue #26)."""
+import json
 import pathlib
 import re
 
@@ -45,6 +46,32 @@ def test_readme_cli_row_names_only_real_commands(capsys):
             cli.main([command, "--help"])
         assert exit_info.value.code == 0, command
     capsys.readouterr()
+
+
+def test_readme_desktop_connector_and_deadline_rows_match_the_tree():
+    desktop = _row("| Desktop app")
+    targets = json.loads(
+        (ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+    )["bundle"]["targets"]
+    assert targets == ["nsis", "msi", "appimage", "deb"]
+    for label in ("NSIS", "MSI", "deb", "AppImage"):
+        assert label in desktop
+    assert "not a signed release" in desktop
+    assert "live Hermes" in desktop
+
+    connectors = _row("| Connectors")
+    for name in ("Clio", "DocuSign", "CourtListener", "PACER"):
+        assert name in connectors
+    assert "Document download is refused" in connectors
+
+    deadlines = _row("| Deadlines")
+    assert "12(a)(1)(A)(ii)" in deadlines
+    rules = json.loads(
+        (ROOT / "src/hermes_legal/data/rules/frcp-service-response.json").read_text(encoding="utf-8")
+    )
+    ids = {rule["id"] for rule in rules["rules"]}
+    assert "frcp-12a1aii-answer-after-waiver" in ids
+    assert "frcp-12a1b-answer-after-waiver" not in ids
 
 
 def test_templates_carry_no_other_project_text():

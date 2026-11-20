@@ -107,3 +107,28 @@ export function configWarnings(input) {
   }
   return warnings;
 }
+
+// When a token store is present (the Tauri shell), the token lives
+// there and localStorage keeps only scheme, host and port. An existing
+// localStorage token is copied once and then removed. Without a store
+// (the Node tests, or the page opened outside the shell) the token
+// stays in localStorage, which is the only place it can live.
+export async function loadConnection(storage, tokenStore, key = CONFIG_STORAGE_KEY) {
+  const saved = loadConfig(storage, key);
+  if (!tokenStore) return saved;
+  if (saved.token) {
+    const existing = await tokenStore.getToken();
+    if (!existing) await tokenStore.setToken(saved.token);
+    saveConfig(storage, { ...saved, token: "" }, key);
+  }
+  const token = (await tokenStore.getToken()) || "";
+  return { ...loadConfig(storage, key), token };
+}
+
+export async function saveConnection(storage, tokenStore, config, key = CONFIG_STORAGE_KEY) {
+  const clean = normalizeConfig(config);
+  if (!tokenStore) return saveConfig(storage, clean, key);
+  await tokenStore.setToken(clean.token);
+  saveConfig(storage, { ...clean, token: "" }, key);
+  return clean;
+}

@@ -1,92 +1,61 @@
-# Desktop: Linux and Windows
+# Desktop: thin client for Hermes (Linux and Windows)
 
-> Correction, 2026-11-17 (issue #34): the desktop app in `desktop/` is
-> now a thin client for a running Hermes agent. It bundles no Python
-> sidecar. The sidecar passages below describe the earlier scaffold and
-> are due for a rewrite. Current plan: [Desktop groundwork](desktop-groundwork.md).
+The app in `desktop/` is a Tauri 2 thin client. It connects to a Hermes
+agent that is already running, the same way the Android clients do. It
+does not embed the agent, it does not start a Python sidecar, and it
+does not edit documents.
 
-## Decision
-The standalone product is **Tauri 2 + a Python sidecar**. Hermes Desktop itself
-is Electron, and if Hermes Legal lived only inside Hermes Desktop, Electron
-would be the answer; as a standalone product for solo and small-firm hardware,
-Tauri's 3-10 MB shell against Electron's 85-150 MB, roughly half the memory,
-Rust capability permissions for privileged files, and built-in signed updater
-win. The Python sidecar is not optional either way: eyecite, python-docx,
-Docassemble patterns and Whisper all live in Python, and the hermes-finance
-codebase pattern is Python.
+Document work stays in the Python package: `legal doc-redline`,
+`legal redact`, `legal bates-stamp`, `legal cite-check`, `legal deadlines`,
+and `legal serve`. The earlier plan for a standalone editor (ONLYOFFICE,
+a Python sidecar, PDF.js inside this window, DOCX and PDF file
+associations) is not this app. It was dropped for v1. See the decisions
+in [desktop groundwork](desktop-groundwork.md). A document viewer beside
+the chat is tracked separately and is not built here.
 
-**Mitigation for WebView variance:** the document of record is never rendered by
-raw WebView layout. Rendering of record happens in ONLYOFFICE / LibreOffice /
-PDF.js at pinned versions, with a visual-regression fidelity corpus in CI on
-both operating systems (numbering, footnotes, tables, tracked changes, comments).
+## What the window does
 
-## Editing stack
-- **ONLYOFFICE** (AGPL-3.0, OOXML-native) for in-app DOCX editing.
-- **LibreOffice headless** (MPL-2.0) for DOCX to PDF conversion and as the
-  fallback editor ("Open in LibreOffice / Word").
-- **python-docx + direct OOXML patching** for AI redlines and templates.
-- **PDF.js** to render, **pdf-lib** to write: annotations, Bates stamps, form
-  fields. Redaction rebuilds the page content — drawing a black box over text
-  is not redaction, and the app verifies by re-extracting text afterward.
-- **Native Tesseract** for OCR (the WASM build is far too slow on long scans).
-- TipTap / Lexical are used only for in-app notes and the Ask composer. They do
-  not round-trip DOCX track changes as OOXML, so they are never the editor of
-  record.
+- Connection: scheme, host, port and token. Scheme, host and port stay
+  in the page's local storage. The token is stored by the shell: Windows
+  Credential Manager, or a mode-0600 file on Linux. A token left in
+  local storage from an older build is moved once and then removed.
+- Health: `GET /health`, with a status dot. A bad token is a separate
+  "token rejected" state, because `/health` does not check the token.
+- Sessions: list, load more (`offset`), create, and history.
+- Chat: streamed replies. If the stream ends without a terminal event,
+  the client says the reply was interrupted and reloads history. Stop
+  aborts the stream and calls `POST /v1/runs/{run_id}/stop`.
+- Approvals: shown when `GET /v1/capabilities` advertises them.
+- The composer is disabled until the connection is healthy and the token
+  is accepted, and while the connection is offline.
+
+The frontend is plain HTML, CSS and JavaScript in `desktop/dist`, with
+no build step. Protocol logic is tested with `npm test` in `desktop/`
+against a mock server.
 
 ## Packaging
-- Linux: AppImage, `.deb`, Flatpak. Declare and document the network permission
-  (local model servers and opt-in connectors) for Flathub review.
-- Windows: signed NSIS/MSI (budget for a code-signing certificate or Azure
-  Trusted Signing from day one — unsigned legal software will not survive
-  SmartScreen), plus a `winget` manifest.
-- File associations for `.docx` and `.pdf`, "Open Folder as Matter", drag and
-  drop, recent matters, a `hermes-legal://` deep link, and a folder watcher that
-  writes conflict copies rather than ever overwriting silently.
 
-### What is scaffolded now
+| Platform | Installers | When they are built |
+|---|---|---|
+| Windows | NSIS, MSI | Every pull request that touches `desktop/**`, plus the manual full build. The pull-request job silent-installs the NSIS package, launches it, and uninstalls it. |
+| Linux | deb, AppImage | Every pull request that touches `desktop/**`, plus the manual full build. |
+| Linux (sandboxed) | Flatpak manifest | Structure only. Not built in CI. |
 
-The Tauri 2 scaffold lives in `desktop/src-tauri/` and is configuration
-and source, not a compiled deliverable in pull request CI:
+The app id is `com.catduckgnaf.hermes-legal` in Tauri and Flatpak. A
+hyphen is allowed in the last element of a Flatpak id (D-Bus bus names
+allow it there, and discourage it). It stays.
 
-- `tauri.conf.json` declares the bundle targets (`nsis`, `msi`,
-  `appimage`, `deb`), the Python sidecar under `bundle.externalBin`, the
-  `.docx` and `.pdf` file associations above, and the signed updater
-  endpoint. The identifier and package names stay `hermes-legal` /
-  `hermes_legal`; this is packaging, not a rename.
-- `src/lib.rs` starts the sidecar as `legal serve --port 8770` (loopback
-  only) and keeps the shell usable, with an explanation on screen, when
-  the sidecar cannot start — the CLI, MCP server and dashboard never depend on
-  the shell.
-- `capabilities/default.json` lets the shell execute exactly the bundled
-  sidecar and nothing else.
-- `desktop/flatpak/` holds the Flatpak manifest; every permission,
-  including `--share=network`, is justified in its README for Flathub
-  review.
-- `desktop/winget/` holds the winget manifest set for the signed NSIS
-  and MSI installers. Installer hashes are added at publish time from
-  the real signed artifacts.
-- `.github/workflows/desktop.yml` builds the shell on `windows-latest`
-  and `ubuntu-latest`. It is dispatched by hand only, so it never gates
-  a pull request.
+There are no DOCX or PDF file associations. The client does not open
+local documents. The signed updater plugin is not registered and has no
+endpoint in `tauri.conf.json`. Both come back only with a feature that
+needs them and, for the updater, a real public key.
 
-### Signing and updates
+Signing secrets are documented in `desktop/packaging.md`. CI builds are
+unsigned smoke builds. They are not a release.
 
-Code signing is a hard release requirement, and no signing material is
-committed to this repository — no certificate, no private key, and no
-placeholder value standing in for one. Release builds read the
-certificate or Azure Trusted Signing configuration, and the Tauri
-updater signing key, from repository secrets; the full list is in
-`desktop/packaging.md`. A build without those secrets is unsigned, is
-for smoke testing only, and is never published. Updates are signed on
-both platforms and verified by the shell against the updater public key
-before they are applied.
+## Not this app
 
-### Acceptance status
-
-Issue #7 accepts this work when installers build in CI for both
-platforms and a clean install on each platform passes `legal doctor`
-and opens the demo matter. The scaffold and the manually triggered
-workflow are the first step; the remaining steps — a real per-target
-sidecar executable, signing secrets configured, signed update
-verification, and the clean-install checks — are tracked in the
-checklist in `desktop/packaging.md` and are not claimed here.
+A future local-first editor could still use ONLYOFFICE or LibreOffice,
+PDF.js, and the Python tools above. That would be a different program,
+or a later milestone of this one, and it is not shipping now. Privacy
+tiers, citation checks and redaction do not move into the WebView.

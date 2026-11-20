@@ -567,20 +567,20 @@ def test_fetch_from_pacer_refused_when_recap_holds_that_exact_document():
     assert t.calls_to(None, "pacer.uscourts.gov") == []
 
 
-def test_fetch_from_pacer_authenticates_and_sends_the_token():
+def test_fetch_from_pacer_does_not_call_an_unverified_download_url():
     t, pacer = pacer_document_pair([RECAP_DOCKET_HIT])
     pacer.lookup_document("Synthetic v. Example", pacer_doc_id="0990002")
-    pacer.fetch_from_pacer("0990002", approved_by="catduck")
-    assert len(t.calls_to("POST", "cso-auth")) == 1
-    fetch = t.calls_to("GET", "pacer.uscourts.gov/documents/")[0]
-    assert fetch["headers"]["X-NEXT-GEN-CSO"] == "synthetic-pacer-token"
+    with pytest.raises(RuntimeError, match="cannot download"):
+        pacer.fetch_from_pacer("0990002", approved_by="catduck")
+    assert t.calls_to("POST", "cso-auth") == []
+    assert t.calls_to("GET", "pacer.uscourts.gov/documents/") == []
 
 
-def test_fetch_from_pacer_without_credentials_never_reaches_pacer():
+def test_fetch_from_pacer_without_a_per_document_check_never_reaches_pacer():
     t, _ = pacer_document_pair([RECAP_DOCKET_HIT])
     recap = CourtListenerConnector(t, MemoryCredentialStore())
     pacer = PacerConnector(t, MemoryCredentialStore(), recap=recap)
     pacer.lookup_document("Synthetic v. Example")
-    with pytest.raises(RuntimeError, match="credential 'username' is missing"):
+    with pytest.raises(RecapCheckRequired, match="0990002"):
         pacer.fetch_from_pacer("0990002", approved_by="catduck")
     assert t.calls_to(None, "pacer.uscourts.gov") == []

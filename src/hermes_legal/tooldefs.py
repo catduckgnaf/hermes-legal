@@ -27,6 +27,7 @@ TOOLS = [
     Tool("legal_chronology", "Build a dated chronology from a matter's documents, each entry cited to its source page."),
     Tool("legal_deadline_extract", "Extract dates and deadlines from orders and documents; returns candidates, computes nothing silently."),
     Tool("legal_deadline_calc", "Compute a deadline from a court rule data file, showing the rule and the arithmetic."),
+    Tool("legal_deadline_list", "List a matter's confirmed deadlines. Read only; a person confirms deadlines on the command line."),
     Tool("legal_transcribe", "Transcribe audio locally (Whisper on-device). Audio never leaves the device."),
     Tool("legal_intake_summary", "Summarize an intake form or folder into a matter summary."),
     Tool("legal_time_log", "Add a time entry for a matter.", write=True),
