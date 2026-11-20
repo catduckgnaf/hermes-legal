@@ -63,6 +63,36 @@ class CostEstimate:
                 f"fees at or under ${PACER_QUARTERLY_WAIVER_USD:.2f} per quarter are waived).")
 
 
+def _doc_key(value) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _exact_recap_documents(hits, pacer_doc_id) -> tuple:
+    """RECAP documents whose ``pacer_doc_id`` equals the requested one.
+
+    A RECAP search result is a docket with nested ``recap_documents``;
+    a flat hit that carries ``pacer_doc_id`` itself is accepted too.
+    Only an exact identifier match counts, never a name or text hit,
+    and a document RECAP lists but does not hold (``is_available``
+    false) is not a match.
+    """
+    wanted = _doc_key(pacer_doc_id)
+    if not wanted:
+        return ()
+    matched = []
+    for hit in hits:
+        if not isinstance(hit, dict):
+            continue
+        nested = hit.get("recap_documents")
+        for doc in (nested if isinstance(nested, list) else [hit]):
+            if not isinstance(doc, dict) or _doc_key(doc.get("pacer_doc_id")) != wanted:
+                continue
+            if doc.get("is_available") is False:
+                continue
+            matched.append(doc)
+    return tuple(matched)
+
+
 class RecapCheckRequired(RuntimeError):
     """Raised when a PACER fetch is attempted without a prior RECAP
     check, through ``lookup_document``, that returned a candidate."""
@@ -71,7 +101,7 @@ class RecapCheckRequired(RuntimeError):
 @dataclass(frozen=True)
 class LookupResult:
     source: str  # "recap" or "pacer_estimate"
-    found: bool  # True only for a confirmed document; a search hit never sets it
+    found: bool  # True only for an exact pacer_doc_id match RECAP holds; a search hit never sets it
     documents: tuple = ()  # Confirmed documents only; search hits go in candidates
     candidates: tuple = ()  # RECAP search hits: possible matches, not confirmed documents
     estimate: CostEstimate | None = None
@@ -141,6 +171,9 @@ class PacerConnector(BaseConnector):
         # gated per case: checking case A never unlocks a paid search for B.
         self._recap_checked_cases: set[str] = set()
         self._auth_token: str | None = None  # in memory only; never written to disk
+        # PACER document ids an exact-match RECAP check found in the free
+        # archive. A paid pull of one of these is refused.
+        self._recap_available_documents: set[str] = set()
 
     def required_credentials(self):
         return ("username", "password")
@@ -234,12 +267,26 @@ class PacerConnector(BaseConnector):
             raise ValueError("pages cannot be negative")
         return CostEstimate(pages=pages)
 
-    def lookup_document(self, query: str, *, estimated_pages: int = 10, matter_id=None) -> LookupResult:
-        """RECAP first. A hit is a candidate only; a miss returns an estimate only."""
+    def lookup_document(self, query: str, *, estimated_pages: int = 10, matter_id=None,
+                        pacer_doc_id: str | None = None) -> LookupResult:
+        """RECAP first. A hit is a candidate only; a miss returns an estimate only.
+
+        Pass ``pacer_doc_id`` to confirm a document: ``found`` is set
+        only when a RECAP document carries exactly that identifier and
+        RECAP holds it. Any other hit stays a candidate. A confirmed
+        document is remembered so a paid pull of it is refused.
+        """
         self.require_enabled(matter_id)
         hits = self.recap.search_recap(query, matter_id=matter_id)
         self._recap_checked = True
         self._recap_candidates = tuple(hits)
+        exact = _exact_recap_documents(hits, pacer_doc_id)
+        if exact:
+            self._recap_available_documents.add(_doc_key(pacer_doc_id))
+            return LookupResult(source="recap", found=True, documents=exact,
+                                candidates=tuple(hits),
+                                note="RECAP holds a document with exactly this PACER document id. "
+                                     "PACER was not contacted and no fee applies.")
         if hits:
             return LookupResult(source="recap", found=False, candidates=tuple(hits),
                                 note="RECAP search returned candidate(s) that may match; "
@@ -262,15 +309,18 @@ class PacerConnector(BaseConnector):
             raise RecapCheckRequired(
                 f"PACER fetch refused: {detail}; run lookup_document first and "
                 "only fetch when RECAP returns a candidate")
+        if _doc_key(document_id) in self._recap_available_documents:
+            raise RecapCheckRequired(
+                f"PACER fetch refused: RECAP already holds document {document_id!r}; "
+                "use the free RECAP copy instead of a paid pull")
         if not approved_by or not str(approved_by).strip():
             raise ApprovalRequired(
                 "PACER charges per page: pass approved_by naming the human who approved "
                 + self.estimate_cost(estimated_pages).describe())
-        headers = {"Accept": "application/json"}
-        if self._auth_token:
-            headers["X-NEXT-GEN-CSO"] = self._auth_token
+        # Credentials are always sent: a paid pull authenticates first and
+        # fails with a clear error when no PACER account is configured.
         resp = self.transport.request("GET", f"{self.pacer_base_url}/documents/{document_id}",
-                                      headers=headers)
+                                      headers=self._auth_headers(matter_id))
         if not resp.ok:
             raise RuntimeError(f"pacer: fetch failed with HTTP {resp.status}")
         return resp.data

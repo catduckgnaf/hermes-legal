@@ -818,6 +818,8 @@ class BaseConnector:
         - On a send path, when a ceiling resolver or a per-matter
           restriction is configured, an explicit ``matter_id`` is
           required — there is no silent all-matters default.
+        - When a resolver is configured, every call (read or send)
+          needs a ``matter_id``; a call with none fails closed.
         - When a resolver is configured but the matter or its ceiling
           is unknown, the call fails closed.
         - A connector whose data leaves the device (``external_tier``
@@ -828,8 +830,15 @@ class BaseConnector:
             raise ConnectorDisabled(
                 f"{self.name}: an explicit matter_id is required on the send path; "
                 "there is no all-matters default for sends")
-        if self._ceiling_resolver is None or matter_id is None:
+        if self._ceiling_resolver is None:
             return
+        if matter_id is None:
+            # Fail closed on reads too: with a ceiling resolver configured,
+            # a call that names no matter cannot be checked against any
+            # ceiling, so it is refused instead of skipping the check.
+            raise ConnectorDisabled(
+                f"{self.name}: a matter_id is required when privacy ceilings are "
+                "configured; a call with no matter cannot be checked and is refused")
         from ..providers import PrivacyViolationError, TIER_ORDER, validate_ceiling
 
         ceiling_value = self._ceiling_resolver(matter_id)

@@ -5,6 +5,8 @@ synthetic accounts; no test touches the network or a live account.
 """
 import json
 import sqlite3
+import sys
+import uuid
 import warnings
 from pathlib import Path
 
@@ -496,3 +498,89 @@ def test_durable_store_is_sqlite_and_additive_on_the_repo_database(tmp_path):
             "connector_deliveries"} <= tables_after
     assert tables_before <= tables_after
     assert isinstance(conn, sqlite3.Connection)
+
+
+# --- Issue #25 follow-up: remaining gaps ---------------------------------------
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows Credential Manager only")
+def test_windows_credential_manager_live_round_trip():
+    """Real CredWriteW / CredReadW / CredDeleteW against a throwaway target."""
+    store = KeychainCredentialStore()
+    service = f"selftest-{uuid.uuid4().hex}"
+    assert store.available
+    assert store.get(service, "token") is None
+    try:
+        store.set(service, "token", "synthetic-secret-é")
+        assert store.get(service, "token") == "synthetic-secret-é"
+        store.set(service, "token", "rotated")  # overwrite in place
+        assert store.get(service, "token") == "rotated"
+    finally:
+        assert store.delete(service, "token") is True
+    assert store.get(service, "token") is None
+    assert store.delete(service, "token") is False
+
+
+def test_read_with_no_matter_fails_closed_when_ceilings_are_configured():
+    t = FakeTransport()
+    t.add("GET", "https://app.clio.com/api/v4/matters.json", lambda req: (200, {"data": []}))
+    c = ClioConnector(t, creds(CLIO_CREDS), matter_ceilings=CEILINGS)
+    with pytest.raises(ConnectorDisabled, match="matter_id is required"):
+        c.list_matters()
+    assert t.calls == []
+    assert c.list_matters(matter_id=43) == []
+
+
+def pacer_document_pair(recap_hits):
+    t = pacer_transport(recap_hits)
+    t.add("GET", "https://pacer.uscourts.gov/documents/",
+          lambda req: (200, {"document_id": "doc-1"}))
+    recap = CourtListenerConnector(t, MemoryCredentialStore())
+    pacer_creds = creds({("pacer", "username"): "synthetic-user",
+                         ("pacer", "password"): "synthetic-password"})
+    return t, PacerConnector(t, pacer_creds, recap=recap)
+
+
+RECAP_DOCKET_HIT = {"docket_id": 7, "caseName": "Synthetic v. Example",
+                    "recap_documents": [
+                        {"id": 1, "pacer_doc_id": "0990001", "is_available": True},
+                        {"id": 2, "pacer_doc_id": "0990002", "is_available": False}]}
+
+
+def test_lookup_document_confirms_only_an_exact_pacer_doc_id_match():
+    t, pacer = pacer_document_pair([RECAP_DOCKET_HIT])
+    loose = pacer.lookup_document("Synthetic v. Example")
+    assert not loose.found and loose.documents == ()
+    other = pacer.lookup_document("Synthetic v. Example", pacer_doc_id="0990009")
+    assert not other.found and other.candidates == (RECAP_DOCKET_HIT,)
+    unavailable = pacer.lookup_document("Synthetic v. Example", pacer_doc_id="0990002")
+    assert not unavailable.found
+    exact = pacer.lookup_document("Synthetic v. Example", pacer_doc_id="0990001")
+    assert exact.found and exact.documents == (RECAP_DOCKET_HIT["recap_documents"][0],)
+    assert t.calls_to(None, "pacer.uscourts.gov") == []
+
+
+def test_fetch_from_pacer_refused_when_recap_holds_that_exact_document():
+    t, pacer = pacer_document_pair([RECAP_DOCKET_HIT])
+    pacer.lookup_document("Synthetic v. Example", pacer_doc_id="0990001")
+    with pytest.raises(RecapCheckRequired, match="free RECAP copy"):
+        pacer.fetch_from_pacer("0990001", approved_by="catduck")
+    assert t.calls_to(None, "pacer.uscourts.gov") == []
+
+
+def test_fetch_from_pacer_authenticates_and_sends_the_token():
+    t, pacer = pacer_document_pair([RECAP_DOCKET_HIT])
+    pacer.lookup_document("Synthetic v. Example", pacer_doc_id="0990002")
+    pacer.fetch_from_pacer("0990002", approved_by="catduck")
+    assert len(t.calls_to("POST", "cso-auth")) == 1
+    fetch = t.calls_to("GET", "pacer.uscourts.gov/documents/")[0]
+    assert fetch["headers"]["X-NEXT-GEN-CSO"] == "synthetic-pacer-token"
+
+
+def test_fetch_from_pacer_without_credentials_never_reaches_pacer():
+    t, _ = pacer_document_pair([RECAP_DOCKET_HIT])
+    recap = CourtListenerConnector(t, MemoryCredentialStore())
+    pacer = PacerConnector(t, MemoryCredentialStore(), recap=recap)
+    pacer.lookup_document("Synthetic v. Example")
+    with pytest.raises(RuntimeError, match="credential 'username' is missing"):
+        pacer.fetch_from_pacer("0990002", approved_by="catduck")
+    assert t.calls_to(None, "pacer.uscourts.gov") == []
