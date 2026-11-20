@@ -45,11 +45,11 @@ impl TokenStore for MemoryTokenStore {
 }
 
 /// The two commands, against any store, so unit tests do not touch the OS.
-pub fn token_get_from(store: &impl TokenStore) -> Result<String, String> {
+pub fn token_get_from(store: &dyn TokenStore) -> Result<String, String> {
     Ok(store.get_token()?.unwrap_or_default())
 }
 
-pub fn token_set_on(store: &impl TokenStore, token: &str) -> Result<(), String> {
+pub fn token_set_on(store: &dyn TokenStore, token: &str) -> Result<(), String> {
     store.set_token(token)
 }
 
