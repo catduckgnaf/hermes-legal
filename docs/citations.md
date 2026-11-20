@@ -123,6 +123,43 @@ which ceiling, with `would_send` empty when the lookup is blocked. The
 agent dispatch path already refuses citation lookups on LOCAL_ONLY
 matters the same way.
 
+### Previewing a lookup before it is sent
+
+`legal cite-check "<text>" --preview` is the pre-send form of that
+preview. It runs no lookup at all and prints `would_send` (the citation
+strings a real run would send, and the resolver they would go to),
+`never_sent` (unrecognized shapes such as Westlaw, Lexis, and
+public-domain citations, which are never sent to any resolver), and
+whether the matter ceiling blocks the lookup. It reports no statuses and
+no gate verdict, because nothing was checked. When neither
+`--privacy-ceiling` nor `--matter-id` is given, `ceiling_enforced` is
+`false`: a real run would then send the listed citations with no ceiling
+applied.
+
+### The agent tool (`legal_cite_check`)
+
+With `lookup: true` the agent tool behaves like the command line:
+
+- It requires a `matter_id`, and blocks on a LOCAL_ONLY matter or on any
+  ceiling value it does not recognize. Blocked means zero resolver calls.
+- Its result carries the same `lookup_preview`, built before any lookup.
+- It routes case citations to CourtListener (Caselaw Access Project as a
+  fallback when its token is configured) and U.S.C. statutes to govinfo.
+  `CourtListenerClient` itself refuses anything that is not a case
+  citation, so a statute can never come back from it as `not_found`.
+- It applies the recorded human attestations, the same ones the e-filing
+  bundle gate reads, so its verdict predicts that gate. An attestation
+  still only lifts `unverified` for a statute, Westlaw, Lexis, or
+  public-domain citation, never a resolver's `not_found` and never an
+  ordinary case citation.
+
+Known limits: the agent tool has no way to pass a quotation, so
+`quote_verified` is reachable only through the Python API
+(`verify_all(..., quotes=...)`), and `legal cite-check` has no
+`--quote` option either. The command line reads only the attestations
+recorded for the given `--matter-id`, while the agent tool and the
+e-filing gate read every recorded attestation.
+
 ## Recording an attestation
 
 ```text

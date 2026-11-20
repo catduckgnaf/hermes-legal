@@ -236,26 +236,37 @@ def _cite_extract(ctx: Context, args: dict) -> dict:
 def _lookup_blocker(ctx: Context, args: dict) -> str | None:
     if args.get("matter_id") is None:
         return "Online lookup needs matter_id so the matter's privacy ceiling can be applied."
-    if _ceiling(ctx, args["matter_id"]) == "LOCAL_ONLY":
-        return "Not looked up: this matter is LOCAL_ONLY and a lookup would send its citations off the device."
-    return None
+    # LOCAL_ONLY and any unrecognized ceiling both block: fail closed.
+    return citations.lookup_block_reason(_ceiling(ctx, args["matter_id"]))
 
 
 def _cite_check(ctx: Context, args: dict) -> dict:
     text = _document_text(ctx, args)
-    resolver, network = None, "not used; lookup was not requested"
+    resolver, network, preview = None, "not used; lookup was not requested", None
     if args.get("lookup"):
         blocker = _lookup_blocker(ctx, args)
+        candidate = ctx.resolver or citations.default_lookup_resolver()
+        if args.get("matter_id") is not None:
+            # The citation-lookup counterpart of the provider pre-send
+            # preview: built before any lookup, and it performs none.
+            preview = citations.build_lookup_preview(
+                citations.extract_citations(text), ceiling=_ceiling(ctx, args["matter_id"]),
+                resolver_name=getattr(candidate, "name", "")).to_dict()
         if blocker:
             network = blocker
         else:
-            resolver = ctx.resolver or citations.CourtListenerClient()
+            resolver = candidate
             network = f"citation strings sent to {resolver.name}"
-    gate = citations.verify_all_gate(text, resolver=resolver)
+    # The same recorded human attestations the e-filing gate accepts, so
+    # this verdict predicts that gate. They only lift ``unverified`` for
+    # statute, Westlaw, Lexis and public-domain citations.
+    attestations = citations.load_attestations(ctx.conn)
+    gate = citations.verify_all_gate(text, resolver=resolver, attestations=attestations)
     return {"results": [{"citation": r.citation, "status": r.status, "source": r.source, "detail": r.detail,
                          "matched_name": r.matched_name, "source_url": r.source_url} for r in gate.results],
             "gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations), "message": gate.message},
-            "network": network, "history": "history_unknown", "history_note": citations.HISTORY_DISCLAIMER}
+            "network": network, "lookup_preview": preview,
+            "history": "history_unknown", "history_note": citations.HISTORY_DISCLAIMER}
 
 
 def _cite_format(ctx: Context, args: dict) -> dict:
