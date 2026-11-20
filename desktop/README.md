@@ -59,7 +59,9 @@ then a silent install, launch and uninstall) and an unsigned Linux build
 (`cargo tauri build --bundles deb,appimage`) on pull requests that touch
 `desktop/**`, and keeps the manually triggered full build. CI builds
 are unsigned smoke builds; signing stays a release step, see
-`packaging.md`.
+`packaging.md`. The unsigned 0.1.0 installers are published as a
+preview at
+[desktop-v0.1.0](https://github.com/catduckgnaf/hermes-legal/releases/tag/desktop-v0.1.0).
 
 ## Plan and manual testing
 
