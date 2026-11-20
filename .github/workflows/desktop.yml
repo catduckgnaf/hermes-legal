@@ -91,17 +91,22 @@ jobs:
         run: |
           $setup = Get-ChildItem -Recurse -Path desktop/src-tauri/target/release/bundle/nsis -Filter *.exe | Select-Object -First 1
           if (-not $setup) { throw "NSIS installer was not produced" }
-          Start-Process -FilePath $setup.FullName -ArgumentList "/S" -Wait
+          $installed = Start-Process -FilePath $setup.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($installed.ExitCode -ne 0) { throw "NSIS installer exited $($installed.ExitCode)" }
           $roots = @(
             "$env:LOCALAPPDATA\hermes-legal",
             "$env:LOCALAPPDATA\Programs\hermes-legal",
             "$env:APPDATA\hermes-legal"
           )
-          $exe = Get-ChildItem -Path $roots -Filter "hermes-legal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          $exe = $null
+          foreach ($name in @("hermes-legal.exe", "hermes-legal-desktop.exe")) {
+            $exe = Get-ChildItem -Path $roots -Filter $name -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($exe) { break }
+          }
           if (-not $exe) {
             Write-Host "Searched: $($roots -join ', ')"
-            Get-ChildItem -Path $env:LOCALAPPDATA -Filter "hermes-legal.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
-            throw "installed hermes-legal.exe was not found"
+            Get-ChildItem -Path $env:LOCALAPPDATA, $env:APPDATA -Recurse -Filter "hermes-legal*.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
+            throw "installed hermes-legal exe was not found"
           }
           $proc = Start-Process -FilePath $exe.FullName -PassThru
           Start-Sleep -Seconds 8

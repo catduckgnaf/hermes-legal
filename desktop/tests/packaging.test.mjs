@@ -30,7 +30,8 @@ test("the shell bundles and spawns no sidecar", () => {
 
 test("Tauri and Flatpak use one app identifier", () => {
   const id = tauri.identifier;
-  assert.equal(id, "com.catduckgnaf.hermes-legal");
+  assert.equal(tauri.identifier, "com.catduckgnaf.hermes-legal");
+  assert.equal(tauri.mainBinaryName, "hermes-legal");
   assert.ok(existsSync(new URL(`flatpak/${id}.json`, root)));
   assert.ok(existsSync(new URL(`flatpak/${id}.desktop`, root)));
   const manifest = json(`flatpak/${id}.json`);
