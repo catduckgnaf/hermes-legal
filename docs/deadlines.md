@@ -94,3 +94,28 @@ The starter rule files cover a small set of Federal Rules of Civil
 Procedure service and response examples. They are not a complete rule
 library, and a period a court order sets for a specific case always wins
 over a general rule file.
+
+## What is and is not wired to a surface
+
+Two agent tools exist: `legal_deadline_extract` (candidates only) and
+`legal_deadline_calc` (a calculation with its steps). Neither writes
+anything, and there is deliberately no agent tool that confirms a
+deadline. Confirmation (`confirm_candidate`, `confirm_calculation`) and
+export (`export_ics`, `export_calendar_events`) are library functions
+today: there is no `legal` command line subcommand or desktop screen
+for confirming a deadline or writing the .ics file yet, and live sync
+to a connected calendar is not built.
+
+## Acceptance tests
+
+`tests/test_acceptance_issues_5_6.py` pins each acceptance criterion at
+the tool boundary, with the hand calculations written out in the file
+header:
+
+| Criterion | Test |
+| --- | --- |
+| A worked example reproduces the hand calculation with the rule and the arithmetic shown | `test_issue6_ac1_*` |
+| No deadline is created from extraction without human confirmation | `test_issue6_ac2_*`, `test_issue6_no_agent_tool_can_create_or_confirm_a_deadline` |
+| Export to .ics, confirmed rows only | `test_issue6_ics_export_has_confirmed_deadlines_only_and_valid_structure` |
+| Filing dates require dual entry | `test_issue6_filing_dates_need_dual_entry` |
+| Every computed deadline carries the verify warning | `test_issue6_every_computed_deadline_carries_the_verify_warning` |

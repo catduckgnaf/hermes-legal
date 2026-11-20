@@ -177,3 +177,23 @@ print(result.to_dict()["summary"])
 
 `legal_playbook_review` also accepts a path to a playbook file or raw
 playbook text, which is how the editing test drives it.
+
+## Using your own playbook folder
+
+The `legal_playbook_review` tool looks for `<playbook>.md` in the
+`playbooks/` folder at the repository root. Set the
+`HERMES_LEGAL_PLAYBOOK_DIR` environment variable to point it at a
+different folder, for example a firm's own playbooks. The file is read
+on every call, so an edit takes effect on the next review with no code
+change and no restart.
+
+## Acceptance tests
+
+`tests/test_acceptance_issues_5_6.py` pins each acceptance criterion
+through the tool dispatcher:
+
+| Criterion | Test |
+| --- | --- |
+| The NDA, MSA, and employment samples run against the demo contract and produce findings tied to clauses | `test_issue5_ac1_*` |
+| Editing a playbook file changes review output with no code change | `test_issue5_ac2_editing_a_playbook_file_changes_tool_output_with_no_code_change` |
+| Proposed language becomes a redline only through the approval-gated `legal_doc_redline` tool | `test_issue5_proposed_language_becomes_a_redline_only_through_the_approval_gate`, `test_issue5_rejected_redline_never_writes_the_proposed_language` |
