@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=hermes-legal
+Comment=Lightweight desktop client for the Hermes agent
+Exec=hermes-legal
+Icon=com.catduckgnaf.hermes-legal
+Terminal=false
+Type=Application
+Categories=Office;
+StartupWMClass=com.catduckgnaf.hermes-legal

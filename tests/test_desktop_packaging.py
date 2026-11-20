@@ -2,8 +2,8 @@
 
 These tests parse the Tauri configuration and the packaging manifests
 with the standard library only and pin the packaging facts the rest of
-the product relies on: bundle targets for both platforms, the Python
-sidecar, the Flatpak network permission, the winget installer set, and
+the product relies on: bundle targets for both platforms, no bundled
+sidecar and no shell permission, the Flatpak permissions, the winget installer set, and
 the desktop workflow (dispatch full build plus the pull-request
 Windows smoke build and mock-server client tests). They also pin
 the signing posture: signing is documented as required secrets, and no
@@ -42,24 +42,23 @@ def test_bundle_targets_cover_windows_and_linux_installers():
     assert {"nsis", "msi", "appimage", "deb"} <= targets
 
 
-def test_python_sidecar_is_the_only_external_binary():
+def test_thin_client_bundles_no_sidecar():
+    # Issue #34: the desktop app is a thin client for a running Hermes
+    # agent. It bundles and starts no other program (issue #26: a
+    # spawned sidecar was never stopped on exit).
     bundle = tauri_config()["bundle"]
-    assert bundle["externalBin"] == ["binaries/hermes-legal-sidecar"]
+    assert "externalBin" not in bundle
     lib = (SRC_TAURI / "src" / "lib.rs").read_text()
-    assert "hermes-legal-sidecar" in lib
-    assert '"serve"' in lib and "8770" in lib
+    assert "tauri_plugin_shell" not in lib
+    assert ".sidecar(" not in lib and ".spawn(" not in lib
+    cargo = tomllib.loads((SRC_TAURI / "Cargo.toml").read_text())
+    assert "tauri-plugin-shell" not in cargo["dependencies"]
 
 
-def test_shell_may_execute_only_the_sidecar():
+def test_webview_has_no_shell_permission():
     capability = json.loads((SRC_TAURI / "capabilities" / "default.json").read_text())
     assert capability["windows"] == ["main"]
-    names = [
-        entry["name"]
-        for permission in capability["permissions"]
-        if isinstance(permission, dict)
-        for entry in permission.get("allow", [])
-    ]
-    assert names and set(names) == {"binaries/hermes-legal-sidecar"}
+    assert capability["permissions"] == ["core:default"]
 
 
 def test_cargo_manifest_is_tauri_2():
@@ -92,16 +91,18 @@ def test_windows_signing_is_configured_not_faked():
     assert windows["digestAlgorithm"] == "sha256"
 
 
-def test_flatpak_manifest_declares_justified_network_permission():
-    manifest = json.loads((DESKTOP / "flatpak" / "com.catduckgnaf.hermeslegal.json").read_text())
-    assert manifest["app-id"] == "com.catduckgnaf.hermeslegal"
+def test_flatpak_manifest_matches_tauri_identifier_and_stays_narrow():
+    identifier = tauri_config()["identifier"]
+    manifest = json.loads((DESKTOP / "flatpak" / f"{identifier}.json").read_text())
+    # One app identifier across Tauri and Flatpak (issue #26).
+    assert manifest["app-id"] == identifier
+    assert (DESKTOP / "flatpak" / f"{identifier}.desktop").is_file()
     assert manifest["command"] == "hermes-legal"
     finish_args = manifest["finish-args"]
-    # Network (local model servers and opt-in connectors) and home
-    # (matters are ordinary folders) are the load-bearing permissions;
-    # both are justified in the Flatpak README for Flathub review.
+    # Network reaches the Hermes agent the user configured. The thin
+    # client touches no user files, so no filesystem grant is allowed.
     assert "--share=network" in finish_args
-    assert "--filesystem=home" in finish_args
+    assert not [arg for arg in finish_args if arg.startswith("--filesystem")]
     readme = (DESKTOP / "flatpak" / "README.md").read_text()
     assert "--share=network" in readme and "LOCAL-ONLY" in readme
 

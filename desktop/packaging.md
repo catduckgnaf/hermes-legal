@@ -1,5 +1,11 @@
 # Packaging
 
+> Correction, 2026-11-17 (issue #34): the desktop app is now a thin
+> client for a running Hermes agent. It bundles no Python sidecar and
+> has no shell permission. Passages below that describe a sidecar are
+> history from the earlier scaffold and are due for a rewrite; the
+> current plan is `docs/desktop-groundwork.md`.
+
 How the desktop installers are built, signed, and published. The shell
 is Tauri 2 with the Python core as a sidecar; the layout in this
 repository is:
@@ -24,7 +30,7 @@ repository is:
 |---|---|---|
 | Windows | NSIS installer, MSI installer | `bundle.targets` in `src-tauri/tauri.conf.json` |
 | Linux | AppImage, `.deb` | `bundle.targets` in `src-tauri/tauri.conf.json` |
-| Linux (sandboxed) | Flatpak | `flatpak/com.catduckgnaf.hermeslegal.json` |
+| Linux (sandboxed) | Flatpak | `flatpak/com.catduckgnaf.hermes-legal.json` |
 
 The Hermes plugin and the local dashboard remain fully usable without
 the shell. Packaging never becomes a requirement for the Python core.
@@ -97,25 +103,22 @@ release process once a signed release exists.
 
 ## Flatpak
 
-The manifest requests `--share=network` and `--filesystem=home`; both
-are justified in `flatpak/README.md` for Flathub review. In short:
-network reaches the user's own local model servers and the connectors
-the user opts into per matter (nothing is sent by default), and home
-access is what opening a folder as a matter means in this product.
-Narrowing home access to per-folder portal grants is follow-up work,
-as is wiring the full Rust and Python build into `flatpak-builder`
-modules.
+The manifest requests `--share=network` and no filesystem access; the
+permissions are justified in `flatpak/README.md` for Flathub review.
+The desktop app is a thin client for a running Hermes agent, so it
+needs the network to reach that agent and nothing from the home
+directory. The app id matches the Tauri identifier,
+`com.catduckgnaf.hermes-legal`.
 
 ## Checklist
 
-- [x] Tauri 2 scaffold with the Python sidecar configured
+- [x] Tauri 2 scaffold (thin client, no sidecar; see the note at the top)
 - [x] NSIS, MSI, AppImage, and `.deb` bundle targets declared
 - [x] Flatpak manifest with the network permission documented and justified
 - [x] winget manifest set for the signed installers
 - [x] Desktop workflow: manually triggered full build for Windows and Linux, plus pull-request client tests and an unsigned Windows build
 - [ ] Windows code-signing certificate or Azure Trusted Signing secret configured
 - [ ] Updater signing key generated, public key committed, updater plugin registered
-- [ ] Python core packaged as a real per-target sidecar executable
 - [ ] Signed auto-update bundles verified on both platforms
 - [ ] Clean Windows install and clean Linux install pass `legal doctor` and open the demo matter
 - [ ] Fidelity corpus rendered and compared on Windows and Linux in CI

@@ -1,5 +1,10 @@
 # Desktop: Linux and Windows
 
+> Correction, 2026-11-17 (issue #34): the desktop app in `desktop/` is
+> now a thin client for a running Hermes agent. It bundles no Python
+> sidecar. The sidecar passages below describe the earlier scaffold and
+> are due for a rewrite. Current plan: [Desktop groundwork](desktop-groundwork.md).
+
 ## Decision
 The standalone product is **Tauri 2 + a Python sidecar**. Hermes Desktop itself
 is Electron, and if Hermes Legal lived only inside Hermes Desktop, Electron

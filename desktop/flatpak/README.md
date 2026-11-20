@@ -1,6 +1,6 @@
 # Flatpak packaging
 
-Manifest: `com.catduckgnaf.hermeslegal.json` (JSON form so the packaging
+Manifest: `com.catduckgnaf.hermes-legal.json` (JSON form so the packaging
 tests can parse it with the Python standard library).
 
 ## Permissions and why each one is requested
@@ -18,12 +18,11 @@ requests exactly these `finish-args`:
   isolation still applies to the shared network namespace permission.
   Nothing is sent anywhere by default; the permission enables connections
   the user configures, it does not create any.
-- `--filesystem=home` — matters are ordinary folders on the user's own
-  computer; opening a folder as a matter is the core workflow. This is
-  broader than a portal-only design, and it is deliberate for v1: the
-  folder watcher and conflict-copy behavior operate on matter folders the
-  user already opened. Narrowing this to per-folder portal grants is
-  follow-up work, recorded in `desktop/packaging.md`.
+- No filesystem permission. The desktop app is a thin client for a
+  running Hermes agent (issue #34): it reads and writes no user files,
+  so the earlier `--filesystem=home` grant was removed. If a later
+  feature needs file access, use the file chooser portal instead of a
+  static grant.
 - `--socket=wayland` and `--socket=fallback-x11` — the Tauri shell renders
   through the system WebView and needs a display socket on both display
   stacks.
@@ -33,9 +32,16 @@ requests exactly these `finish-args`:
 
 ## Build status
 
-This is a scaffold manifest: the module copies the built shell and
-sidecar binaries into `/app`. Wiring the full Rust and Python build into
+This is a scaffold manifest: the module copies the built shell
+binary into `/app`. Wiring the full Rust build into
 `flatpak-builder` modules, and the Flathub submission itself, are
 follow-up work named in `desktop/packaging.md`. No Flathub listing is
 claimed until that work lands and a clean install passes the acceptance
 checks in issue #7.
+
+## App identifier
+
+The Flatpak app id is `com.catduckgnaf.hermes-legal`, the same string as
+the Tauri `identifier` in `src-tauri/tauri.conf.json`. Earlier scaffolds
+used `com.catduckgnaf.hermeslegal` here; nothing was published under
+that id. `desktop/tests/packaging.test.mjs` fails if the two drift.

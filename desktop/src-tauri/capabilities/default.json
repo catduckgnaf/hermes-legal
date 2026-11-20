@@ -1,29 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capability set for the main window: core window access plus permission to execute exactly the bundled Python sidecar, and nothing else.",
+  "description": "Default capability set for the main window: core window access only. The thin client starts no process and needs no shell, filesystem or HTTP plugin permission; the WebView talks to Hermes with fetch.",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    {
-      "identifier": "shell:allow-execute",
-      "allow": [
-        {
-          "name": "binaries/hermes-legal-sidecar",
-          "sidecar": true,
-          "args": ["serve", { "validator": "--port" }, { "validator": "\\d+" }]
-        }
-      ]
-    },
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "binaries/hermes-legal-sidecar",
-          "sidecar": true,
-          "args": ["serve", { "validator": "--port" }, { "validator": "\\d+" }]
-        }
-      ]
-    }
-  ]
+  "permissions": ["core:default"]
 }

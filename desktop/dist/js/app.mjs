@@ -3,7 +3,8 @@
 // this file only connects that logic to the page.
 
 import { HermesClient, approvalsSupported } from "./client.mjs";
-import { loadConfig, saveConfig } from "./config.mjs";
+import { configWarnings, loadConfig, saveConfig } from "./config.mjs";
+import { HealthMonitor } from "./health.mjs";
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,6 +34,27 @@ let client = null;
 let capabilities = null;
 let currentSessionId = null;
 let pendingApproval = null;
+let monitor = null;
+
+// Keep the indicator following the real connection after connect:
+// HealthMonitor polls /health and backs off while the server is away.
+function watchHealth(activeClient) {
+  monitor?.stop();
+  monitor = new HealthMonitor(activeClient, {
+    onChange: ({ state, retryInMs, health }) => {
+      if (client !== activeClient) return;
+      if (state === "ok") {
+        setStatus("ok", `Connected. Hermes ${health?.version ?? ""} at ${activeClient.baseUrl}`.trim());
+      } else {
+        setStatus(
+          "error",
+          `Connection lost. Retrying in ${Math.max(1, Math.round(retryInMs / 1000))} s.`,
+        );
+      }
+    },
+  });
+  monitor.start();
+}
 
 function showError(message) {
   els.error.textContent = message || "";
@@ -165,6 +187,7 @@ async function connect() {
     showError(err.message);
     return;
   }
+  monitor?.stop();
   client = new HermesClient(config);
   setStatus("pending", "Connecting…");
   try {
@@ -181,12 +204,18 @@ async function connect() {
       els.approvalNote.textContent =
         "Approvals: this server does not advertise approval support in /v1/capabilities, so no approval prompts will be shown. Runs that need approval will park on the server until another client answers.";
     }
+    const warnings = configWarnings(config);
+    if (warnings.length > 0) {
+      els.approvalNote.textContent += ` Warning: ${warnings.join(" ")}`;
+    }
+    watchHealth(client);
     await refreshSessions();
     if (!currentSessionId) {
       const sessions = await client.listSessions();
       if (sessions.length > 0) await selectSession(sessions[0].id);
     }
   } catch (err) {
+    monitor?.stop();
     client = null;
     setStatus("error", "Not connected.");
     showError(err.message);

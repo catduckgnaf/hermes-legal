@@ -44,9 +44,7 @@ for the earlier Tauri decision record this client keeps.
 - `src-tauri/` — the Tauri 2 shell (`tauri.conf.json`, `Cargo.toml`,
   `src/main.rs`, `src/lib.rs`, capabilities, icons). The shell stays
   minimal; all client behavior is in the frontend modules. The
-  bundled Python sidecar from the earlier scaffold remains configured
-  for the legal core packaging and is not part of the Hermes
-  connection.
+  shell bundles no sidecar and grants the WebView no shell permission.
 - `flatpak/` — Flatpak manifest (structure only in this pass; Linux
   packaging is later).
 - `winget/` — winget manifest set for the signed Windows installers.
@@ -62,3 +60,9 @@ runs the mock-server tests and an unsigned Windows build
 `desktop/**`, and keeps the manually triggered full build. CI builds
 are unsigned smoke builds; signing stays a release step, see
 `packaging.md`.
+
+## Plan and manual testing
+
+- `../docs/desktop-groundwork.md`: audit, architecture, security model,
+  milestones and open questions.
+- `TESTING.md`: manual checklist for Windows and for GitHub Actions.
