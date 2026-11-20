@@ -65,7 +65,7 @@ Regression scoping reason:
 
 ## Safety, compatibility and deployment
 
-<!-- Identify changed confirmation, readiness, profile, clearance or artifact guards. Distinguish offline, local-model and live-connector verification. Document migration/rollback where relevant. Merging code does not authorize release publication, service deployment or physical operation. -->
+<!-- Identify changed approval, confirmation, privacy-ceiling or unattended-refusal guards. Distinguish offline, local-model and live-connector verification. Document migration/rollback where relevant. Merging code does not authorize release publication, service deployment or any live connector action. -->
 
 - Safety/compatibility impact:
 - Live checks or deployments performed (or "None"):

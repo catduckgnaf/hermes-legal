@@ -393,29 +393,17 @@ def extract_candidates(text):
 
 # ------------------------------------------------------- confirmation / store
 
-_EXTRA_COLUMNS = {
-    "status": "TEXT NOT NULL DEFAULT 'confirmed'",
-    "kind": "TEXT NOT NULL DEFAULT ''",
-    "confirmed_by": "TEXT NOT NULL DEFAULT ''",
-    "second_confirmer": "TEXT NOT NULL DEFAULT ''",
-    "confirmed_at": "TEXT NOT NULL DEFAULT ''",
-    "source_excerpt": "TEXT NOT NULL DEFAULT ''",
-    "rule_id": "TEXT NOT NULL DEFAULT ''",
-    "calculation_json": "TEXT NOT NULL DEFAULT ''",
-}
-
-
 def ensure_deadline_columns(conn):
     """Add the confirmation columns to an existing deadlines table.
 
-    The base schema in db.py already carries these columns for new files;
-    databases created before they existed gain them here, with existing
-    rows left untouched (their ``verified`` value still governs them).
+    The column list and the column-adding statement live in one place, the numbered
+    migration list in db.py. db.connect already applies it; this covers a
+    connection opened some other way (a bare sqlite3 connection onto an
+    older file), with existing rows left untouched (their ``verified``
+    value still governs them).
     """
-    existing = {row[1] for row in conn.execute("PRAGMA table_info(deadlines)")}
-    for name, decl in _EXTRA_COLUMNS.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE deadlines ADD COLUMN {name} {decl}")
+    from . import db
+    db.ensure_deadline_confirmation_columns(conn)
     conn.commit()
 
 

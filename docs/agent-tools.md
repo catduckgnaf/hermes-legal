@@ -9,7 +9,7 @@ export HERMES_LEGAL_AGENT_TIER=LOCAL_ONLY   # only if the client's model runs on
 uv run legal mcp serve
 ```
 
-The server speaks newline-delimited JSON-RPC over stdio. Only tools that are built are listed. Five are not built yet: `legal_chronology`, `legal_transcribe`, `legal_intake_summary`, `legal_sync` and `legal_efile_bundle`.
+The server speaks newline-delimited JSON-RPC over stdio. Only tools that are built are listed. Two are not built yet: `legal_transcribe` and `legal_sync`.
 
 ## Declare the agent's privacy tier
 

@@ -113,3 +113,33 @@ def test_fresh_database_gets_current_columns(tmp_path):
     for name in ("status", "kind", "confirmed_by", "second_confirmer",
                  "confirmed_at", "source_excerpt", "rule_id", "calculation_json"):
         assert name in columns(conn, "deadlines")
+
+
+def test_alter_table_lives_only_in_the_migration_list():
+    """Issue #26: no module keeps its own ad hoc ALTER TABLE check."""
+    import pathlib
+
+    package = pathlib.Path(db.__file__).parent
+    offenders = sorted(
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if path.name != "db.py" and "ALTER TABLE" in path.read_text(encoding="utf-8"))
+    assert offenders == []
+
+
+def test_ensure_deadline_columns_upgrades_a_bare_connection(tmp_path):
+    """deadlines.ensure_deadline_columns reuses migration 3 on a connection
+    that never went through db.connect, and existing rows survive."""
+    from hermes_legal import deadlines
+
+    conn = sqlite3.connect(tmp_path / "old.db")
+    conn.executescript(OLD_SCHEMA)
+    conn.execute("INSERT INTO matters (name, folder) VALUES ('M', '/m')")
+    conn.execute("INSERT INTO deadlines (matter_id, due_at, title) VALUES (1, '2026-01-02', 'Answer due')")
+    conn.commit()
+    deadlines.ensure_deadline_columns(conn)
+    deadlines.ensure_deadline_columns(conn)  # idempotent
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(deadlines)")}
+    assert {name for name, _ in db._DEADLINE_CONFIRMATION_COLUMNS} <= columns
+    assert conn.execute("SELECT title, status FROM deadlines").fetchall() == [("Answer due", "confirmed")]
+    conn.close()

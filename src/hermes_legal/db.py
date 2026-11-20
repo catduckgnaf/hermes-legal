@@ -127,9 +127,18 @@ _DEADLINE_CONFIRMATION_COLUMNS = (
 )
 
 
-def _migration_3_deadline_confirmation_columns(conn):
+def ensure_deadline_confirmation_columns(conn):
+    """Bring a deadlines table up to the confirmation columns (idempotent).
+
+    Public so deadlines.py can reuse migration 3 on a connection that did
+    not come from connect(), instead of keeping its own ALTER TABLE.
+    """
     for name, decl in _DEADLINE_CONFIRMATION_COLUMNS:
         _add_column_if_missing(conn, "deadlines", name, decl)
+
+
+def _migration_3_deadline_confirmation_columns(conn):
+    ensure_deadline_confirmation_columns(conn)
 
 
 # The one numbered migration list. Append-only: never edit or renumber an
