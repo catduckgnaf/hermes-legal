@@ -8,6 +8,7 @@ its cloud. Standard library only.
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -40,6 +41,70 @@ class _RefuseRedirect(urllib.request.HTTPRedirectHandler):
         raise LocalEndpointError(f"the local model server tried to redirect to {newurl}")
 
 
+def _loopback_addresses(host, port, resolve=None):
+    """Every address ``host`` names, all verified loopback, or raise."""
+    resolve = resolve or socket.getaddrinfo
+    try:
+        infos = resolve(host, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise LocalEndpointError(f"{host} could not be resolved as a loopback address: {exc}") from None
+    addresses = []
+    for info in infos:
+        text = str(info[4][0]).split("%")[0]
+        try:
+            ok = ipaddress.ip_address(text).is_loopback
+        except ValueError:
+            ok = False
+        if not ok:
+            raise LocalEndpointError(f"{host} resolves to {text}, which is not a loopback address")
+        if text not in addresses:
+            addresses.append(text)
+    if not addresses:
+        raise LocalEndpointError(f"{host} is not a loopback address")
+    return addresses
+
+
+def _loopback_create_connection(address, *args, **kwargs):
+    """Connect only to an address verified loopback at connect time.
+
+    ``require_loopback`` checks the URL when the client is built; this
+    runs again at the moment of connecting, and the socket is opened to
+    the checked IP address rather than to the name. A name that started
+    resolving somewhere else between the check and the send is refused
+    before any connection is opened, so nothing is sent off the device.
+    """
+    host, port = address[0], address[1]
+    last_error = None
+    for ip in _loopback_addresses(host, port):
+        try:
+            return socket.create_connection((ip, port), *args, **kwargs)
+        except OSError as exc:
+            last_error = exc
+    raise last_error
+
+
+class _LoopbackHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _loopback_create_connection
+
+
+class _LoopbackHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._create_connection = _loopback_create_connection
+
+
+class _LoopbackHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(_LoopbackHTTPConnection, req)
+
+
+class _LoopbackHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_LoopbackHTTPSConnection, req, context=getattr(self, "_context", None))
+
+
 def require_loopback(base_url: str, resolve=socket.getaddrinfo) -> str:
     """Return ``base_url`` if every address it names is on this computer."""
     parts = urllib.parse.urlsplit(base_url)
@@ -61,7 +126,7 @@ def require_local_model(model: str) -> str:
     name = str(model or "").strip()
     if not name:
         raise LocalEndpointError(f"no local model chosen; pass --model or set {MODEL_ENV}")
-    if name.rsplit(":", 1)[-1].casefold().endswith("cloud"):
+    if name.rsplit(":", 1)[-1].casefold().endswith("cloud") or providers.is_cloud_routed_model(name):
         raise LocalEndpointError(f"{name} runs in Ollama's cloud, so it cannot be used for local inference")
     return name
 
@@ -72,7 +137,8 @@ class LocalModelClient:
     def __init__(self, base_url: str | None = None, *, timeout: float = 300.0, opener=None):
         self.base_url = require_loopback(base_url or os.environ.get(BASE_URL_ENV) or DEFAULT_BASE_URL)
         self.timeout = timeout
-        self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}), _RefuseRedirect())
+        self._opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _RefuseRedirect(), _LoopbackHTTPHandler(), _LoopbackHTTPSHandler())
 
     @staticmethod
     def build_body(model: str, system: str, user: str) -> bytes:
@@ -132,6 +198,15 @@ def ask_matter(conn, matter_id: int, question: str, *, model: str | None = None,
     provider = providers.route(ceiling)
     if not provider.is_local:  # pragma: no cover - the catalog lists local providers first
         raise providers.PrivacyViolationError("only local inference is built")
+    # The router verified the provider's cataloged endpoint. The endpoint
+    # this client will really connect to is verified as well and recorded
+    # in the AI log, so the log names where the bytes went. A test double
+    # with no base_url has no endpoint to verify and falls back to the
+    # provider's cataloged one.
+    client_endpoint = getattr(client, "base_url", None) or None
+    if client_endpoint is not None and not providers.is_local_endpoint(client_endpoint):
+        raise providers.PrivacyViolationError(
+            f"the local model endpoint {client_endpoint!r} does not resolve to a loopback address; refused")
     chunks = _select_chunks(conn, matter_id, question)
     preview = providers.build_preview(provider, ceiling, chunks=chunks, model=model)
     context = "\n\n".join(f"[{c['path']}, {c['unit']} {c['index']}]\n{c['text']}" for c in chunks)
@@ -148,7 +223,7 @@ def ask_matter(conn, matter_id: int, question: str, *, model: str | None = None,
     sent_record = providers.log_sent_payload(
         conn, matter_id, preview, payload,
         action=f"ask chunks={len(chunks)} prompt_sha256={digest}",
-        chunks=chunks,
+        chunks=chunks, endpoint=client_endpoint,
     )
     if hasattr(client, "chat_payload"):
         answer = client.chat_payload(payload, expected_sha256=sent_record["sent_sha256"])

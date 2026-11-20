@@ -54,7 +54,12 @@ The ceiling is enforced by the provider router in
   `http://127.0.0.1:1234/v1`). Before a local provider is routed, its
   endpoint host must resolve to loopback — `localhost`, 127.0.0.0/8 or
   ::1. A name that resolves to any non-loopback address, or does not
-  resolve at all, is refused. Ollama's own `OLLAMA_HOST` environment
+  resolve at all, is refused. The name `localhost` is resolved like any
+  other name, not trusted by spelling, and `0.0.0.0` and `::` are not
+  loopback. The local model client checks again when it connects and
+  opens the socket to the checked address, so a name that starts
+  resolving elsewhere after the first check is refused before anything
+  is sent. The AI log row for a send records the verified endpoint. Ollama's own `OLLAMA_HOST` environment
   variable may override the Ollama endpoint, and an explicit endpoint
   may be passed to the router, but both are honored only after the same
   loopback check, so pointing a "local" runtime at another machine
