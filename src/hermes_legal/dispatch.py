@@ -261,7 +261,8 @@ def _cite_check(ctx: Context, args: dict) -> dict:
     # this verdict predicts that gate. They only lift ``unverified`` for
     # statute, Westlaw, Lexis and public-domain citations.
     attestations = citations.load_attestations(ctx.conn)
-    gate = citations.verify_all_gate(text, resolver=resolver, attestations=attestations)
+    quotes = args.get("quotes") or None
+    gate = citations.verify_all_gate(text, resolver=resolver, attestations=attestations, quotes=quotes)
     return {"results": [{"citation": r.citation, "status": r.status, "source": r.source, "detail": r.detail,
                          "matched_name": r.matched_name, "source_url": r.source_url} for r in gate.results],
             "gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations), "message": gate.message},
@@ -294,6 +295,15 @@ def _deadline_extract(ctx: Context, args: dict) -> dict:
 
 def _deadline_calc(ctx: Context, args: dict) -> dict:
     return deadlines.calculate(args["rule_id"], args["trigger_date"], args.get("service_method", "personal")).to_dict()
+
+
+def _deadline_list(ctx: Context, args: dict) -> dict:
+    rows = deadlines.list_deadlines(ctx.conn, args["matter_id"])
+    return {
+        "deadlines": rows,
+        "warning": deadlines.VERIFY_WARNING,
+        "note": "Read only. A named human confirms a deadline with `legal deadlines confirm`. No agent tool can create or confirm one.",
+    }
 
 
 def _redline_precheck(ctx: Context, args: dict) -> None:
@@ -429,7 +439,7 @@ IMPLS: dict[str, Impl] = {
     "legal_doc_read": Impl(_doc_read, _schema(("matter_id", "path"), matter_id=MATTER, path=STR, start=INT, limit=INT), True),
     "legal_doc_compare": Impl(_doc_compare, _schema(("matter_id", "original", "revised"), matter_id=MATTER, original=STR, revised=STR), True),
     "legal_cite_extract": Impl(_cite_extract, _schema(**SOURCE), True),
-    "legal_cite_check": Impl(_cite_check, _schema(**SOURCE, lookup=BOOL), True),
+    "legal_cite_check": Impl(_cite_check, _schema(**SOURCE, lookup=BOOL, quotes={"type": "object"}), True),
     "legal_cite_format": Impl(_cite_format, _schema(("text",), text=STR)),
     "legal_playbook_review": Impl(_playbook_review, _schema(("matter_id", "path", "playbook"), matter_id=MATTER, path=STR, playbook=STR), True),
     "legal_doc_redline": Impl(_doc_redline, _schema(
@@ -437,6 +447,7 @@ IMPLS: dict[str, Impl] = {
         paragraphs={"type": "array", "items": STR}), True, _redline_precheck),
     "legal_deadline_extract": Impl(_deadline_extract, _schema(**SOURCE), True),
     "legal_deadline_calc": Impl(_deadline_calc, _schema(("rule_id", "trigger_date"), rule_id=STR, trigger_date=STR, service_method=STR)),
+    "legal_deadline_list": Impl(_deadline_list, _schema(("matter_id",), matter_id=MATTER), True),
     "legal_chronology": Impl(_chronology, _schema(("matter_id",), matter_id=MATTER, path=STR, limit=INT), True),
     "legal_intake_summary": Impl(_intake_summary, _schema(("matter_id",), matter_id=MATTER, path=STR), True),
     "legal_time_log": Impl(_time_log, _schema(("matter_id", "minutes", "description"), matter_id=MATTER, minutes={"type": "integer", "minimum": 1, "maximum": 1440}, description=STR), True, _time_precheck),
@@ -468,10 +479,16 @@ def _validate(schema: dict, args: Any) -> None:
         if spec is None:
             raise ToolError("invalid_arguments", f"unknown argument: {key}")
         kind = spec["type"]
-        valid = (isinstance(value, str) if kind == "string" else
-                 isinstance(value, bool) if kind == "boolean" else
-                 isinstance(value, int) and not isinstance(value, bool) if kind == "integer" else
-                 isinstance(value, list) and all(isinstance(item, str) for item in value))
+        if kind == "object":
+            valid = (
+                isinstance(value, dict)
+                and all(isinstance(item_key, str) and isinstance(item_value, str) for item_key, item_value in value.items())
+            )
+        else:
+            valid = (isinstance(value, str) if kind == "string" else
+                     isinstance(value, bool) if kind == "boolean" else
+                     isinstance(value, int) and not isinstance(value, bool) if kind == "integer" else
+                     isinstance(value, list) and all(isinstance(item, str) for item in value))
         if not valid:
             raise ToolError("invalid_arguments", f"{key} must be a {kind}")
         if kind == "integer" and not spec.get("minimum", value) <= value <= spec.get("maximum", value):

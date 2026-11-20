@@ -99,3 +99,47 @@ test("stop cancels the pending timer and silences a probe in flight", async () =
   assert.equal(h.changes.length, 0);
   assert.equal(h.pending().length, 0);
 });
+
+test("a 401 from the authenticated probe is token rejected, not offline", async () => {
+  const rejected = Object.assign(new Error("Invalid API key"), { status: 401, code: "invalid_api_key" });
+  const timers = [];
+  const changes = [];
+  let authCalls = 0;
+  const client = {
+    async health() {
+      return { status: "ok", version: "mock-1" };
+    },
+    async probeAuth() {
+      authCalls += 1;
+      if (authCalls === 1) throw rejected;
+      return { features: {} };
+    },
+  };
+  const monitor = new HealthMonitor(client, {
+    onChange: (change) => changes.push(change),
+    intervalMs: 15000,
+    backoff: { jitter: 0 },
+    setTimer: (fn, ms) => {
+      timers.push({ fn, ms, cleared: false, fired: false });
+      return timers.length - 1;
+    },
+    clearTimer: (id) => {
+      timers[id].cleared = true;
+    },
+  });
+  monitor.start();
+  const pending = () => timers.filter((timer) => !timer.cleared && !timer.fired);
+  const fire = async () => {
+    const timer = pending().at(-1);
+    timer.fired = true;
+    timer.fn();
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+  await fire();
+  assert.equal(changes[0].state, "rejected");
+  assert.equal(changes[0].error, rejected);
+  assert.equal(pending().at(-1).ms, 15000);
+  await fire();
+  assert.equal(changes.at(-1).state, "ok");
+  monitor.stop();
+});

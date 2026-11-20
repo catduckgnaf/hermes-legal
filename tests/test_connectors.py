@@ -261,14 +261,18 @@ def test_recap_miss_returns_estimate_only_and_fetch_stays_refused():
     assert t.calls_to("GET", "pacer.uscourts.gov") == []
 
 
-def test_fetch_from_pacer_after_recap_candidate_still_needs_approval():
+def test_fetch_from_pacer_after_recap_candidate_still_needs_approval_and_does_not_download():
     t, pacer = pacer_pair([{"id": 5, "caseName": "Synthetic v. Example"}])
     pacer.lookup_document("Synthetic v. Example")
+    with pytest.raises(RecapCheckRequired, match="doc-1"):
+        pacer.fetch_from_pacer("doc-1", estimated_pages=12, approved_by="catduck")
+    pacer.lookup_document("Synthetic v. Example", pacer_doc_id="doc-1")
     with pytest.raises(ApprovalRequired):
         pacer.fetch_from_pacer("doc-1", estimated_pages=12)
+    with pytest.raises(RuntimeError, match="cannot download"):
+        pacer.fetch_from_pacer("doc-1", estimated_pages=12, approved_by="catduck")
     assert t.calls_to("GET", "pacer.uscourts.gov") == []
-    data = pacer.fetch_from_pacer("doc-1", estimated_pages=12, approved_by="catduck")
-    assert data["document_id"] == "doc-1"
+    assert t.calls_to("POST", "cso-auth") == []
 
 
 def test_pacer_cost_estimate_math():

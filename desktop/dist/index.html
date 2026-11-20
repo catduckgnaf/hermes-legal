@@ -56,6 +56,7 @@
         <div class="row">
           <h2 id="sessions-heading">Sessions</h2>
           <button id="refresh-sessions" type="button">Refresh</button>
+          <button id="load-more" type="button" hidden>Load more</button>
           <button id="new-session" type="button">New session</button>
         </div>
         <div id="session-list"></div>
@@ -71,8 +72,9 @@
         <div id="messages" aria-live="polite"></div>
         <form id="composer">
           <label class="sr-only" for="input">Message Hermes</label>
-          <textarea id="input" rows="3" placeholder="Message Hermes…"></textarea>
-          <button id="send" type="submit">Send</button>
+          <textarea id="input" rows="3" placeholder="Message Hermes…" disabled></textarea>
+          <button id="send" type="submit" disabled>Send</button>
+          <button id="stop" type="button" disabled>Stop</button>
         </form>
       </section>
     </main>

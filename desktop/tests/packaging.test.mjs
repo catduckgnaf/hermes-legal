@@ -11,10 +11,10 @@ const json = (path) => JSON.parse(read(path));
 
 const tauri = json("src-tauri/tauri.conf.json");
 
-test("the webview capability grants core access only, no shell permission", () => {
+test("the webview capability grants core access and only the two token commands", () => {
   const capability = json("src-tauri/capabilities/default.json");
   assert.deepEqual(capability.windows, ["main"]);
-  assert.deepEqual(capability.permissions, ["core:default"]);
+  assert.deepEqual(capability.permissions, ["core:default", "allow-token-get", "allow-token-set"]);
   assert.doesNotMatch(JSON.stringify(capability.permissions), /shell:|fs:|http:/);
 });
 
@@ -48,11 +48,22 @@ test("the Flatpak sandbox has network access and no filesystem grant", () => {
   assert.deepEqual(args.filter((arg) => arg.startsWith("--filesystem")), []);
 });
 
-test("Windows bundle targets and the CSP stay as the client needs them", () => {
-  assert.ok(tauri.bundle.targets.includes("nsis"));
-  assert.ok(tauri.bundle.targets.includes("msi"));
+test("the CSP allows the Tauri IPC bridge plus http and https, with no inline style and no websocket", () => {
   const csp = tauri.app.security.csp;
   assert.ok(csp.includes("default-src 'self'"));
   assert.ok(csp.includes("script-src 'self';"));
-  assert.doesNotMatch(csp, /script-src[^;]*unsafe/);
+  assert.match(csp, /style-src 'self'/);
+  assert.doesNotMatch(csp, /unsafe-inline/);
+  assert.doesNotMatch(csp, /ws:/);
+  assert.doesNotMatch(csp, /wss:/);
+  assert.match(csp, /connect-src 'self' ipc: http:\/\/ipc\.localhost http: https:/);
+});
+
+test("file associations and the updater block are not part of the thin client", () => {
+  assert.equal(tauri.bundle.fileAssociations, undefined);
+  assert.equal(tauri.plugins, undefined);
+  const lib = read("src-tauri/src/lib.rs");
+  assert.match(lib, /token_get/);
+  assert.match(lib, /token_set/);
+  assert.doesNotMatch(lib, /tauri_plugin_updater|plugin_updater/);
 });

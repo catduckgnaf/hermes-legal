@@ -170,6 +170,10 @@ class PacerConnector(BaseConnector):
         # Case numbers whose RECAP check has run. A paid case search is
         # gated per case: checking case A never unlocks a paid search for B.
         self._recap_checked_cases: set[str] = set()
+        # Document ids passed to lookup_document. A paid document fetch is
+        # gated per document: a check of document A, or a free-text lookup
+        # that named no document, never unlocks a fetch of document B.
+        self._recap_checked_documents: set[str] = set()
         self._auth_token: str | None = None  # in memory only; never written to disk
         # PACER document ids an exact-match RECAP check found in the free
         # archive. A paid pull of one of these is refused.
@@ -280,6 +284,8 @@ class PacerConnector(BaseConnector):
         hits = self.recap.search_recap(query, matter_id=matter_id)
         self._recap_checked = True
         self._recap_candidates = tuple(hits)
+        if pacer_doc_id:
+            self._recap_checked_documents.add(_doc_key(pacer_doc_id))
         exact = _exact_recap_documents(hits, pacer_doc_id)
         if exact:
             self._recap_available_documents.add(_doc_key(pacer_doc_id))
@@ -299,17 +305,24 @@ class PacerConnector(BaseConnector):
 
     def fetch_from_pacer(self, document_id: str, *, estimated_pages: int = 10,
                          approved_by: str | None = None, matter_id=None):
-        """Paid pull. Refused without a prior RECAP candidate and approval."""
+        """Paid pull. Refused without a RECAP check of this document and approval.
+
+        The download itself is not implemented. The PACER Case Locator API
+        user guide (https://pacer.uscourts.gov/help/pacer/pacer-case-locator-pcl-api-user-guide)
+        documents case search, not a document-byte URL, and no sandbox
+        response for a document download was recorded. Calling an invented
+        ``/documents/{id}`` address would bill or fail against the wrong
+        host, so this method stops before any PACER request and says so.
+        """
         self.require_enabled(matter_id, send=True)
-        if not self._recap_candidates:
-            if self._recap_candidates is None:
-                detail = "no RECAP check has been run on this connector"
-            else:
-                detail = "the RECAP check found no candidate"
+        key = _doc_key(document_id)
+        if key not in self._recap_checked_documents:
             raise RecapCheckRequired(
-                f"PACER fetch refused: {detail}; run lookup_document first and "
-                "only fetch when RECAP returns a candidate")
-        if _doc_key(document_id) in self._recap_available_documents:
+                f"PACER fetch refused: no RECAP check has been run for document "
+                f"{document_id!r}; run lookup_document with this pacer_doc_id first. "
+                "A check of a different document, or a search that named no document, "
+                "does not unlock this one")
+        if key in self._recap_available_documents:
             raise RecapCheckRequired(
                 f"PACER fetch refused: RECAP already holds document {document_id!r}; "
                 "use the free RECAP copy instead of a paid pull")
@@ -317,10 +330,9 @@ class PacerConnector(BaseConnector):
             raise ApprovalRequired(
                 "PACER charges per page: pass approved_by naming the human who approved "
                 + self.estimate_cost(estimated_pages).describe())
-        # Credentials are always sent: a paid pull authenticates first and
-        # fails with a clear error when no PACER account is configured.
-        resp = self.transport.request("GET", f"{self.pacer_base_url}/documents/{document_id}",
-                                      headers=self._auth_headers(matter_id))
-        if not resp.ok:
-            raise RuntimeError(f"pacer: fetch failed with HTTP {resp.status}")
-        return resp.data
+        raise RuntimeError(
+            "pacer: cannot download this document. The official PACER Case Locator "
+            "API documents case search, not a verified document-byte URL, so this "
+            "client does not call one. No PACER request was made. Use the free "
+            "RECAP copy when RECAP holds the document. "
+            "See https://pacer.uscourts.gov/help/pacer/pacer-case-locator-pcl-api-user-guide")

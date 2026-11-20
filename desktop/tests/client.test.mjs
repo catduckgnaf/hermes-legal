@@ -5,7 +5,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 
 import { HermesClient, HermesError, approvalsSupported } from "../dist/js/client.mjs";
-import { startMockHermes, APPROVAL_TRIGGER } from "./mock-hermes.mjs";
+import { startMockHermes, APPROVAL_TRIGGER, CUT_TRIGGER } from "./mock-hermes.mjs";
 
 let mock;
 let client;
@@ -151,4 +151,35 @@ test("approvalsSupported is false when the server does not advertise it", async 
   }
   assert.equal(approvalsSupported(null), false);
   assert.equal(approvalsSupported({}), false);
+});
+
+test("listSessionsPage uses offset and reports has_more", async () => {
+  const first = await client.listSessionsPage({ limit: 1, offset: 0 });
+  assert.equal(first.sessions.length, 1);
+  assert.equal(first.hasMore, true);
+  const second = await client.listSessionsPage({ limit: 1, offset: 1 });
+  assert.equal(second.sessions.length, 1);
+  assert.notEqual(second.sessions[0].id, first.sessions[0].id);
+});
+
+test("a stream that ends without a terminal event is interrupted", async () => {
+  const result = await client.chatStream("sess_alpha", CUT_TRIGGER);
+  assert.equal(result.status, "interrupted");
+  assert.equal(result.content, "Partial");
+  const messages = await client.listMessages("sess_alpha");
+  assert.equal(messages.at(-1).content, "Partial");
+});
+
+test("stopRun posts to the run stop endpoint", async () => {
+  const stopped = await client.stopRun("run_mock_stop");
+  assert.equal(stopped.stopped, true);
+  assert.equal(stopped.run_id, "run_mock_stop");
+});
+
+test("probeAuth rejects a wrong token with 401", async () => {
+  const bad = new HermesClient({ ...mock.config, token: "wrong" });
+  await assert.rejects(bad.probeAuth(), (err) => {
+    assert.equal(err.status, 401);
+    return true;
+  });
 });

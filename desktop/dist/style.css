@@ -30,7 +30,8 @@ header h1 {
 #status-dot[data-state="ok"] {
   background: #1a9e54;
 }
-#status-dot[data-state="error"] {
+#status-dot[data-state="error"],
+#status-dot[data-state="rejected"] {
   background: #c62f3b;
 }
 #status-dot[data-state="pending"] {

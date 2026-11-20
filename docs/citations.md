@@ -153,12 +153,12 @@ With `lookup: true` the agent tool behaves like the command line:
   public-domain citation, never a resolver's `not_found` and never an
   ordinary case citation.
 
-Known limits: the agent tool has no way to pass a quotation, so
-`quote_verified` is reachable only through the Python API
-(`verify_all(..., quotes=...)`), and `legal cite-check` has no
-`--quote` option either. The command line reads only the attestations
-recorded for the given `--matter-id`, while the agent tool and the
-e-filing gate read every recorded attestation.
+`legal cite-check --quote CITATION=TEXT` and the `quotes` object on
+`legal_cite_check` pass a quotation through to the resolver. A quotation
+that appears in the fetched opinion is `quote_verified`. One that does
+not is `quote_not_verified` and blocks Verify-All. The command line
+reads only the attestations recorded for the given `--matter-id`, while
+the agent tool and the e-filing gate read every recorded attestation.
 
 ## Recording an attestation
 

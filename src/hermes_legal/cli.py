@@ -69,6 +69,83 @@ def _run_actions(args):
     finally:
         conn.close()
 
+def _bind_quotes(found, items):
+    """Map `--quote CITATION=TEXT` onto the normalized keys verify_all uses."""
+    raw = {}
+    for item in items or []:
+        key, sep, text = str(item).partition("=")
+        if not sep or not key.strip() or not text.strip():
+            raise ValueError(
+                "--quote must be CITATION=TEXT, with the quotation after the first equals sign")
+        raw[key.strip()] = text.strip()
+    if not raw:
+        return None
+    bound = dict(raw)
+    for cite in found:
+        for user_key, text in raw.items():
+            if user_key == cite.raw or user_key == cite.normalized:
+                bound[cite.normalized] = text
+    return bound
+
+
+def _run_deadlines(args):
+    import pathlib
+    from . import deadlines
+    conn = db.connect()
+    try:
+        if matters.get_matter(conn, args.matter_id) is None:
+            print(f"error: no such matter: {args.matter_id}", file=sys.stderr)
+            return 2
+        if args.deadlines_cmd == "list":
+            rows = deadlines.list_deadlines(conn, args.matter_id)
+            if args.json:
+                print(json.dumps({"deadlines": rows, "warning": deadlines.VERIFY_WARNING}, indent=2, default=str))
+            else:
+                print(deadlines.VERIFY_WARNING)
+                if not rows:
+                    print("no deadlines")
+                for row in rows:
+                    print(f"{row['due_at']}\t{row['title']}\t{row.get('status', '')}")
+            return 0
+        if args.deadlines_cmd == "export-ics":
+            text = deadlines.export_ics(conn, args.matter_id)
+            # The warning is inside each event. Say it again on the console
+            # so a calendar with no events still shows it, and a file write
+            # never overwrites an existing file.
+            print(deadlines.VERIFY_WARNING)
+            if "BEGIN:VEVENT" in text and "Verify against local rules" not in text:
+                print("error: export dropped the verify-against-local-rules warning", file=sys.stderr)
+                return 2
+            try:
+                with pathlib.Path(args.output).open("xb") as handle:
+                    handle.write(text.encode("utf-8"))
+            except FileExistsError:
+                print(f"error: {args.output} already exists; export never overwrites a file", file=sys.stderr)
+                return 2
+            print(f"wrote {args.output}")
+            return 0
+        if args.deadlines_cmd == "confirm":
+            try:
+                calc = deadlines.calculate(args.rule_id, args.trigger_date, args.service_method)
+                deadlines.confirm_calculation(
+                    conn, args.matter_id, calc, args.title, args.by, args.second_by)
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            print(json.dumps({
+                "confirmed": True,
+                "due_at": calc.due_date.isoformat(),
+                "title": args.title,
+                "rule_source": calc.rule_source,
+                "warning": deadlines.VERIFY_WARNING,
+            }, indent=2))
+            return 0
+        print("error: unknown deadlines command", file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+
+
 def _run_ask(args):
     from . import local_model
     conn = db.connect()
@@ -298,6 +375,8 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
                    help="read the privacy ceiling and recorded attestations for this matter from the database")
     c.add_argument("--preview", action="store_true",
                    help="pre-send preview only: list the citation strings a lookup would send and to which resolver, and run no lookup")
+    c.add_argument("--quote", action="append", default=[], metavar="CITATION=TEXT",
+                   help="quotation to check for this citation; repeatable. The key is the raw citation or its normalized form, and the quotation is everything after the first equals sign")
     ca = sub.add_parser("cite-attest", help="record a human attestation for a statute, Westlaw, Lexis, or public-domain citation (who checked it, from what source)")
     ca.add_argument("citation", help="the citation as written, e.g. '42 U.S.C. § 1983' or '2019 WL 4639462'")
     ca.add_argument("--by", required=True, help="who checked the citation")
@@ -340,6 +419,22 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
     mcpsub.add_parser("allow-writes").add_argument("state", choices=["on", "off"])
     ask = sub.add_parser("ask", help="ask about a matter using only a model on this computer")
     ask.add_argument("matter_id", type=int); ask.add_argument("question"); ask.add_argument("--model", default=None)
+    dl = sub.add_parser("deadlines", help="list, confirm, and export confirmed deadlines")
+    dsub = dl.add_subparsers(dest="deadlines_cmd", required=True)
+    dlist = dsub.add_parser("list", help="list deadlines stored for a matter")
+    dlist.add_argument("matter_id", type=int)
+    dlist.add_argument("--json", action="store_true")
+    dconf = dsub.add_parser("confirm", help="confirm a calculated deadline; a person only, never an agent tool")
+    dconf.add_argument("matter_id", type=int)
+    dconf.add_argument("--rule-id", required=True)
+    dconf.add_argument("--trigger-date", required=True)
+    dconf.add_argument("--title", required=True)
+    dconf.add_argument("--by", required=True, help="the named human who confirmed the deadline")
+    dconf.add_argument("--second-by", default=None, help="a second, different person; required for filing deadlines")
+    dconf.add_argument("--service-method", default="personal")
+    dexp = dsub.add_parser("export-ics", help="write confirmed deadlines to an .ics file")
+    dexp.add_argument("matter_id", type=int)
+    dexp.add_argument("-o", "--output", required=True)
     ai_log_cmd = sub.add_parser("ai-log", help="inspect the per-matter AI-use log")
     ai_log_sub = ai_log_cmd.add_subparsers(dest="ai_log_cmd", required=True)
     ai_export = ai_log_sub.add_parser("export", help="export one matter's AI log as JSON or CSV")
@@ -522,6 +617,11 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
         if ceiling is not None:
             resolver = guard_resolver(resolver, ceiling)
         found = extract_citations(args.text, include_unrecognized=True)
+        try:
+            quotes = _bind_quotes(found, getattr(args, "quote", None))
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
         attestations = {}
         if matter_id is not None and db.default_path().is_file():
             conn = db.connect_readonly(db.default_path())
@@ -554,7 +654,7 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
                          + ("" if resolver is not None else " No resolver is configured, so a real run would also send nothing.")),
             }, indent=2))
             return 0
-        gate = verify_all_gate(args.text, resolver=resolver, attestations=attestations)
+        gate = verify_all_gate(args.text, resolver=resolver, attestations=attestations, quotes=quotes)
         lookup_preview = build_lookup_preview(
             found, ceiling=ceiling,
             resolver_name=getattr(resolver, "name", "") if resolver is not None else "") if ceiling is not None else None
@@ -593,6 +693,8 @@ def main(argv=None, *, cite_resolver=None, attest_conn=None):
             "lookup_preview": lookup_preview.to_dict() if lookup_preview is not None else None,
             "verify_all_gate": {"allowed": gate.allowed, "blocked": list(gate.blocked_citations)},
         }, indent=2)); return 0
+    if args.cmd == "deadlines":
+        return _run_deadlines(args)
     if args.cmd == "tool":
         return _run_tool(args)
     if args.cmd == "actions":

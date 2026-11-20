@@ -1,28 +1,23 @@
 # Packaging
 
-> Correction, 2026-11-17 (issue #34): the desktop app is now a thin
-> client for a running Hermes agent. It bundles no Python sidecar and
-> has no shell permission. Passages below that describe a sidecar are
-> history from the earlier scaffold and are due for a rewrite; the
-> current plan is `docs/desktop-groundwork.md`.
+How the desktop installers are built, signed, and published. The app is
+a Tauri 2 thin client for a running Hermes agent. It bundles no Python
+sidecar and has no shell permission. The layout in this repository is:
 
-How the desktop installers are built, signed, and published. The shell
-is Tauri 2 with the Python core as a sidecar; the layout in this
-repository is:
-
-- `src-tauri/` — the Tauri scaffold: `tauri.conf.json` (bundle targets,
-  sidecar, file associations, updater endpoint), `Cargo.toml`,
-  `src/main.rs` and `src/lib.rs` (the shell starts the sidecar), and
-  `capabilities/default.json` (the sidecar is the only program the shell
-  may execute).
-- `dist/` — the desktop client frontend: plain HTML, CSS and
-  JavaScript that connects to the Hermes API server the user
-  configured (see `README.md` and `PROTOCOL.md` in this directory).
+- `src-tauri/` — the Tauri shell: `tauri.conf.json` (Windows and Linux
+  bundle targets, no file associations, no updater block), `Cargo.toml`,
+  `src/main.rs`, `src/lib.rs` and `src/credentials.rs` (the window plus
+  `token_get` and `token_set`), and `capabilities/default.json` (core
+  window access and those two commands only).
+- `dist/` — the desktop client frontend: plain HTML, CSS and JavaScript
+  that connects to the Hermes API server the user configured (see
+  `README.md` and `PROTOCOL.md` in this directory).
 - `flatpak/` — the Flatpak manifest and its permission justifications.
+  The manifest is not built in CI.
 - `winget/` — the winget manifest set for the signed Windows installers.
-- `.github/workflows/desktop.yml` — the desktop build: pull-request
-  tests and Windows smoke build, plus the manually triggered full
-  build.
+- `.github/workflows/desktop.yml` — pull-request tests, an unsigned
+  Windows build with a silent NSIS install check, an unsigned Linux
+  build, and the manually triggered full build.
 
 ## Bundle targets
 
@@ -32,28 +27,26 @@ repository is:
 | Linux | AppImage, `.deb` | `bundle.targets` in `src-tauri/tauri.conf.json` |
 | Linux (sandboxed) | Flatpak | `flatpak/com.catduckgnaf.hermes-legal.json` |
 
-The Hermes plugin and the local dashboard remain fully usable without
-the shell. Packaging never becomes a requirement for the Python core.
+The CLI, the MCP server and the local dashboard remain fully usable
+without the shell. Packaging never becomes a requirement for the Python
+core.
 
 ## Building
 
 The desktop workflow (`.github/workflows/desktop.yml`) runs on pull
 requests that touch `desktop/**`: the client tests against the mock
-Hermes server, and an unsigned Windows build
-(`cargo tauri build --bundles nsis,msi`) for smoke. The full build is
+Hermes server, an unsigned Windows build
+(`cargo tauri build --bundles nsis,msi`) that silent-installs, launches
+and uninstalls the NSIS package, and an unsigned Linux build
+(`cargo tauri build --bundles deb,appimage`). The full build is
 dispatched by hand (`workflow_dispatch`): it builds the shell on
 `windows-latest` and `ubuntu-latest` and uploads the bundle artifacts
 for smoke testing.
 
-Two build inputs are still scaffold placeholders, and artifacts built
-with them are never a release:
-
-- The sidecar file is staged as a placeholder with the target-triple
-  name Tauri expects. Packaging the Python core as one executable per
-  target replaces it.
-- The updater public key in `tauri.conf.json` is empty, and the shell
-  does not register the updater plugin yet (see `src/lib.rs`). Both land
-  with the first signed release, when the key exists.
+The updater is not configured. `tauri.conf.json` has no updater block
+and the shell does not register the updater plugin. Both land with the
+first signed release, when a real public key exists. An empty public
+key is not committed in its place.
 
 ## Code signing: required secrets, nothing committed
 

@@ -3,10 +3,11 @@
 // this file only connects that logic to the page.
 
 import { HermesClient, approvalsSupported } from "./client.mjs";
-import { configWarnings, loadConfig, saveConfig } from "./config.mjs";
+import { configWarnings, loadConnection, saveConnection } from "./config.mjs";
 import { HealthMonitor } from "./health.mjs";
 
 const $ = (id) => document.getElementById(id);
+const SESSION_PAGE = 50;
 
 const els = {
   scheme: $("scheme"),
@@ -18,12 +19,14 @@ const els = {
   statusText: $("status-text"),
   approvalNote: $("approval-note"),
   refreshSessions: $("refresh-sessions"),
+  loadMore: $("load-more"),
   newSession: $("new-session"),
   sessions: $("session-list"),
   messages: $("messages"),
   composer: $("composer"),
   input: $("input"),
   send: $("send"),
+  stop: $("stop"),
   approval: $("approval"),
   approvalText: $("approval-text"),
   approvalChoices: $("approval-choices"),
@@ -35,26 +38,27 @@ let capabilities = null;
 let currentSessionId = null;
 let pendingApproval = null;
 let monitor = null;
+let loadedSessions = [];
+let sessionOffset = 0;
+let streaming = false;
+let activeRunId = null;
+let streamAbort = null;
 
-// Keep the indicator following the real connection after connect:
-// HealthMonitor polls /health and backs off while the server is away.
-function watchHealth(activeClient) {
-  monitor?.stop();
-  monitor = new HealthMonitor(activeClient, {
-    onChange: ({ state, retryInMs, health }) => {
-      if (client !== activeClient) return;
-      if (state === "ok") {
-        setStatus("ok", `Connected. Hermes ${health?.version ?? ""} at ${activeClient.baseUrl}`.trim());
-      } else {
-        setStatus(
-          "error",
-          `Connection lost. Retrying in ${Math.max(1, Math.round(retryInMs / 1000))} s.`,
-        );
-      }
+function detectTokenStore() {
+  const invoke = globalThis.__TAURI__?.core?.invoke;
+  if (typeof invoke !== "function") return null;
+  return {
+    async getToken() {
+      const value = await invoke("token_get");
+      return typeof value === "string" ? value : "";
     },
-  });
-  monitor.start();
+    async setToken(token) {
+      await invoke("token_set", { token });
+    },
+  };
 }
+
+const tokenStore = detectTokenStore();
 
 function showError(message) {
   els.error.textContent = message || "";
@@ -64,6 +68,13 @@ function showError(message) {
 function setStatus(kind, text) {
   els.statusDot.dataset.state = kind;
   els.statusText.textContent = text;
+}
+
+function setComposerEnabled(on) {
+  const locked = streaming || !on;
+  els.input.disabled = locked;
+  els.send.disabled = locked;
+  els.stop.disabled = !streaming;
 }
 
 function readForm() {
@@ -111,7 +122,9 @@ function renderSessions(sessions) {
     meta.className = "session-meta";
     meta.textContent = `${session.messageCount} messages`;
     item.append(title, meta);
-    item.addEventListener("click", () => selectSession(session.id));
+    item.addEventListener("click", () => {
+      selectSession(session.id).catch((err) => showError(err.message));
+    });
     els.sessions.append(item);
   }
   if (sessions.length === 0) {
@@ -122,22 +135,59 @@ function renderSessions(sessions) {
   }
 }
 
-async function refreshSessions() {
+function watchHealth(activeClient) {
+  monitor?.stop();
+  monitor = new HealthMonitor(activeClient, {
+    onChange: ({ state, retryInMs, health }) => {
+      if (client !== activeClient) return;
+      if (state === "ok") {
+        setStatus("ok", `Connected. Hermes ${health?.version ?? ""} at ${activeClient.baseUrl}`.trim());
+        if (!streaming) setComposerEnabled(true);
+      } else if (state === "rejected") {
+        setStatus("rejected", "Token rejected. The server is up, but this API key was refused.");
+        setComposerEnabled(false);
+      } else {
+        setStatus(
+          "error",
+          `Connection lost. Retrying in ${Math.max(1, Math.round(retryInMs / 1000))} s.`,
+        );
+        setComposerEnabled(false);
+      }
+    },
+  });
+  monitor.start();
+}
+
+async function refreshSessions({ append = false } = {}) {
   if (!client) return;
-  renderSessions(await client.listSessions());
+  if (!append) {
+    sessionOffset = 0;
+    loadedSessions = [];
+  }
+  const page = await client.listSessionsPage({ limit: SESSION_PAGE, offset: sessionOffset });
+  loadedSessions = append ? loadedSessions.concat(page.sessions) : page.sessions;
+  sessionOffset = loadedSessions.length;
+  renderSessions(loadedSessions);
+  els.loadMore.hidden = !page.hasMore;
 }
 
 async function selectSession(sessionId) {
-  currentSessionId = sessionId;
-  els.messages.replaceChildren();
-  hideApproval();
-  const messages = await client.listMessages(sessionId);
-  for (const message of messages) {
-    if (message.role === "user" || message.role === "assistant") {
-      addMessage(message.role, message.content);
+  if (!client) return;
+  showError("");
+  try {
+    currentSessionId = sessionId;
+    els.messages.replaceChildren();
+    hideApproval();
+    const messages = await client.listMessages(sessionId);
+    for (const message of messages) {
+      if (message.role === "user" || message.role === "assistant") {
+        addMessage(message.role, message.content);
+      }
     }
+    await refreshSessions();
+  } catch (err) {
+    showError(err.message);
   }
-  await refreshSessions();
 }
 
 function showApproval(payload) {
@@ -181,7 +231,7 @@ async function connect() {
   showError("");
   let config;
   try {
-    config = saveConfig(window.localStorage, readForm());
+    config = await saveConnection(window.localStorage, tokenStore, readForm());
   } catch (err) {
     setStatus("error", "Check the connection settings.");
     showError(err.message);
@@ -190,13 +240,26 @@ async function connect() {
   monitor?.stop();
   client = new HermesClient(config);
   setStatus("pending", "Connecting…");
+  setComposerEnabled(false);
   try {
     const health = await client.health();
-    capabilities = await client.capabilities().catch(() => null);
+    try {
+      capabilities = await client.probeAuth();
+    } catch (err) {
+      if (err.status === 401) {
+        setStatus("rejected", "Token rejected. The server is up, but this API key was refused.");
+        showError(err.message);
+        setComposerEnabled(false);
+        watchHealth(client);
+        return;
+      }
+      throw err;
+    }
     setStatus(
       "ok",
       `Connected — Hermes ${health.version ?? ""} at ${client.baseUrl}`.trim(),
     );
+    setComposerEnabled(true);
     if (capabilities && approvalsSupported(capabilities)) {
       els.approvalNote.textContent =
         "Approvals: this server advertises approval events and the run approval endpoint, so approval prompts are shown here.";
@@ -210,39 +273,61 @@ async function connect() {
     }
     watchHealth(client);
     await refreshSessions();
-    if (!currentSessionId) {
-      const sessions = await client.listSessions();
-      if (sessions.length > 0) await selectSession(sessions[0].id);
+    if (!currentSessionId && loadedSessions.length > 0) {
+      await selectSession(loadedSessions[0].id);
     }
   } catch (err) {
     monitor?.stop();
     client = null;
     setStatus("error", "Not connected.");
+    setComposerEnabled(false);
     showError(err.message);
+  }
+}
+
+async function stopStream() {
+  streamAbort?.abort();
+  if (client && activeRunId) {
+    try {
+      await client.stopRun(activeRunId);
+    } catch (err) {
+      showError(`Stop failed: ${err.message}`);
+    }
   }
 }
 
 async function send(event) {
   event.preventDefault();
   const text = els.input.value.trim();
-  if (!text || !client) return;
+  if (!text || !client || streaming) return;
   showError("");
-  if (!currentSessionId) {
-    const created = await client.createSession({});
-    currentSessionId = created.id;
-    await refreshSessions();
+  try {
+    if (!currentSessionId) {
+      const created = await client.createSession({});
+      currentSessionId = created.id;
+      await refreshSessions();
+    }
+  } catch (err) {
+    showError(err.message);
+    return;
   }
   els.input.value = "";
-  addMessage("user", text);
-  const body = addMessage("assistant", "");
-  els.send.disabled = true;
+  const body = addMessage("user", text);
+  const assistant = addMessage("assistant", "");
+  void body;
+  streaming = true;
+  activeRunId = null;
+  streamAbort = new AbortController();
+  setComposerEnabled(false);
   try {
     const result = await client.chatStream(currentSessionId, text, {
+      signal: streamAbort.signal,
       onDelta: (_delta, full) => {
-        body.textContent = full;
+        assistant.textContent = full;
         els.messages.scrollTop = els.messages.scrollHeight;
       },
       onEvent: (name, payload) => {
+        if (payload?.run_id) activeRunId = payload.run_id;
         if (name === "approval.request") {
           setStatus("pending", "Waiting for your approval decision…");
           showApproval(payload);
@@ -255,28 +340,57 @@ async function send(event) {
         }
       },
     });
-    body.textContent = result.content;
-    if (result.status !== "completed") {
+    assistant.textContent = result.content;
+    if (result.status === "interrupted") {
+      showError("The reply was interrupted before Hermes finished. Reloading the session.");
+      await selectSession(currentSessionId);
+    } else if (result.status !== "completed") {
       showError(`The run ended with status: ${result.status}`);
     }
   } catch (err) {
-    showError(err.message);
+    if (err?.name === "AbortError") {
+      showError("Stopped.");
+      if (currentSessionId) await selectSession(currentSessionId);
+    } else {
+      showError(err.message);
+    }
   } finally {
-    els.send.disabled = false;
-    refreshSessions().catch(() => {});
+    streaming = false;
+    activeRunId = null;
+    streamAbort = null;
+    setComposerEnabled(els.statusDot.dataset.state === "ok");
+    refreshSessions().catch((err) => showError(err.message));
   }
 }
 
-fillForm(loadConfig(window.localStorage));
-els.connect.addEventListener("click", connect);
+loadConnection(window.localStorage, tokenStore).then((config) => {
+  fillForm(config);
+  setComposerEnabled(false);
+});
+els.connect.addEventListener("click", () => {
+  connect().catch((err) => showError(err.message));
+});
 els.refreshSessions.addEventListener("click", () =>
   refreshSessions().catch((err) => showError(err.message)),
 );
+els.loadMore.addEventListener("click", () =>
+  refreshSessions({ append: true }).catch((err) => showError(err.message)),
+);
 els.newSession.addEventListener("click", async () => {
   if (!client) return;
-  const created = await client.createSession({});
-  currentSessionId = created.id;
-  els.messages.replaceChildren();
-  await refreshSessions();
+  showError("");
+  try {
+    const created = await client.createSession({});
+    currentSessionId = created.id;
+    els.messages.replaceChildren();
+    await refreshSessions();
+  } catch (err) {
+    showError(err.message);
+  }
 });
-els.composer.addEventListener("submit", send);
+els.composer.addEventListener("submit", (event) => {
+  send(event).catch((err) => showError(err.message));
+});
+els.stop.addEventListener("click", () => {
+  stopStream().catch((err) => showError(err.message));
+});

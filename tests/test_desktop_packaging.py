@@ -58,7 +58,7 @@ def test_thin_client_bundles_no_sidecar():
 def test_webview_has_no_shell_permission():
     capability = json.loads((SRC_TAURI / "capabilities" / "default.json").read_text())
     assert capability["windows"] == ["main"]
-    assert capability["permissions"] == ["core:default"]
+    assert capability["permissions"] == ["core:default", "allow-token-get", "allow-token-set"]
 
 
 def test_cargo_manifest_is_tauri_2():
@@ -68,19 +68,16 @@ def test_cargo_manifest_is_tauri_2():
     assert cargo["build-dependencies"]["tauri-build"]["version"] == "2"
 
 
-def test_file_associations_for_docx_and_pdf():
-    associations = tauri_config()["bundle"]["fileAssociations"]
-    extensions = {ext for entry in associations for ext in entry["ext"]}
-    assert {"docx", "pdf"} <= extensions
-
-
-def test_updater_endpoint_points_at_github_releases():
-    updater = tauri_config()["plugins"]["updater"]
-    assert updater["active"] is True
-    assert any(
-        endpoint.startswith("https://github.com/catduckgnaf/hermes-legal/releases/")
-        for endpoint in updater["endpoints"]
-    )
+def test_thin_client_has_no_file_associations_or_updater():
+    # Issue #86: both were leftovers from the local-first desktop.
+    # The thin client does not open local documents, and the updater
+    # stays out until a signed release has a real public key.
+    bundle = tauri_config()["bundle"]
+    assert "fileAssociations" not in bundle
+    assert "updater" not in tauri_config().get("plugins", {})
+    lib = (SRC_TAURI / "src" / "lib.rs").read_text()
+    assert "fn token_get" in lib and "fn token_set" in lib
+    assert "plugin_updater" not in lib
 
 
 def test_windows_signing_is_configured_not_faked():
@@ -143,10 +140,14 @@ def test_desktop_workflow_dispatch_and_pr_windows_build():
     assert "pull_request:" in workflow
     assert '"desktop/**"' in workflow
     assert "build-windows-pr" in workflow
+    assert "build-linux-pr" in workflow
     assert "cargo tauri build --bundles nsis,msi" in workflow
+    assert "cargo tauri build --bundles deb,appimage" in workflow
     assert "npm test" in workflow
     assert "windows-latest" in workflow
     assert "ubuntu-latest" in workflow
+    assert "Swatinem/rust-cache" in workflow
+    assert "Silent NSIS install" in workflow
     # Signing material is referenced as secrets, never as literal values.
     assert "secrets.TAURI_SIGNING_PRIVATE_KEY" in workflow
     assert "secrets.WINDOWS_CERTIFICATE" in workflow

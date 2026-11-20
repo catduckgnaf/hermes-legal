@@ -23,7 +23,7 @@ dev = ["pytest>=9.1.1", "pytest-xdist>=3.6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = [".", "src"]
 addopts = "-m 'not live'"
 markers = [
   "live: calls a real external legal data service. Run explicitly: uv run pytest -m live",
