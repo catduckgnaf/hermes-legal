@@ -59,6 +59,8 @@ def test_webview_has_no_shell_permission():
     capability = json.loads((SRC_TAURI / "capabilities" / "default.json").read_text())
     assert capability["windows"] == ["main"]
     assert capability["permissions"] == ["core:default", "allow-token-get", "allow-token-set"]
+    build = (SRC_TAURI / "build.rs").read_text()
+    assert "token_get" in build and "token_set" in build
 
 
 def test_cargo_manifest_is_tauri_2():

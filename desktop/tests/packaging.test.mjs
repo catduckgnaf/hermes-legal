@@ -16,6 +16,9 @@ test("the webview capability grants core access and only the two token commands"
   assert.deepEqual(capability.windows, ["main"]);
   assert.deepEqual(capability.permissions, ["core:default", "allow-token-get", "allow-token-set"]);
   assert.doesNotMatch(JSON.stringify(capability.permissions), /shell:|fs:|http:/);
+  const build = read("src-tauri/build.rs");
+  assert.match(build, /token_get/);
+  assert.match(build, /token_set/);
 });
 
 test("the shell bundles and spawns no sidecar", () => {
